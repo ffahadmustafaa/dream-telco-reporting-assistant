@@ -4,11 +4,13 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { invokeLLM } from "./_core/llm";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { addAuditLog, dailyPerformance, ensureWorkspaceInitialized, getDb, getWorkspaceData, imports, listAuditLogs, payouts, projects, targets, teamLeaders, testers } from "./db";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 const dateInput = z.string().optional();
 const toDate = (value?: string) => value ? new Date(`${value}T00:00:00.000Z`) : new Date();
 const money = (value: string | number | undefined) => Number(value ?? 0);
+const cleanName = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+const textFromLLM = (value: string | Array<{ type: string; text?: string }>) => typeof value === "string" ? value : value.map(part => part.text ?? "").join("\n");
 
 export const appRouter = router({
   system: router({ health: publicProcedure.query(() => ({ ok: true })) }),
@@ -75,12 +77,44 @@ export const appRouter = router({
   }),
   audit: router({ list: protectedProcedure.query(() => listAuditLogs()) }),
   assistant: router({
-    chat: protectedProcedure.input(z.object({ messages: z.array(z.object({ role: z.enum(["user", "assistant", "system"]), content: z.string() })).min(1) })).mutation(async ({ input }) => {
+    chat: protectedProcedure.input(z.object({ messages: z.array(z.object({ role: z.enum(["user", "assistant", "system"]), content: z.string() })).min(1), businessDate: z.string().optional() })).mutation(async ({ ctx, input }) => {
       const latest = input.messages[input.messages.length - 1]?.content ?? "";
-      const answer = await invokeLLM({ messages: [{ role: "system", content: "You are the Dream Telco Reporting Assistant. Be concise and operational. Never invent names, amounts, targets, or calculations. If data is missing say Not provided. If a change is requested, explain that the user should use the validated action in the app. Support daily performance, roster, targets, payout exceptions, and report interpretation." }, ...input.messages.map(message => ({ role: message.role as "user" | "assistant" | "system", content: message.content }))] });
+      const answer = await invokeLLM({
+        messages: [{ role: "system", content: "You are the Dream Telco Reporting Assistant. Extract daily tester performance from the user's latest message when it contains names and numeric project quantities. The supported projects are exactly Super X and Inception. A Team Leader heading may appear before tester rows. Return an empty rows array for ordinary questions. Never invent names or numbers; use 0 only when the user explicitly gives 0 or the row clearly has a missing project value that should be treated as 0. The report must preserve every tester row and separate it by Team Leader." }, ...input.messages.map(message => ({ role: message.role as "user" | "assistant" | "system", content: message.content }))],
+        response_format: { type: "json_schema", json_schema: { name: "daily_report_extraction", strict: true, schema: { type: "object", properties: { answer: { type: "string" }, date: { type: "string" }, rows: { type: "array", items: { type: "object", properties: { leader: { type: "string" }, tester: { type: "string" }, superX: { type: "number" }, inception: { type: "number" } }, required: ["leader", "tester", "superX", "inception"], additionalProperties: false } }, notes: { type: "array", items: { type: "string" } } }, required: ["answer", "date", "rows", "notes"], additionalProperties: false } } },
+        max_tokens: 4000,
+      });
       const responseContent = answer.choices?.[0]?.message?.content;
-      const content = typeof responseContent === "string" ? responseContent : `I received: ${latest}. Add the relevant file or report date so I can validate it.`;
-      return { content };
+      let extraction: { answer?: string; date?: string; rows: Array<{ leader: string; tester: string; superX: number; inception: number }>; notes?: string[] } = { rows: [] };
+      try { extraction = JSON.parse(textFromLLM(responseContent ?? "{}")); } catch { /* fall through to normal chat response */ }
+      const reportDate = extraction.date && /^\d{4}-\d{2}-\d{2}$/.test(extraction.date) ? extraction.date : input.businessDate ?? new Date().toISOString().slice(0, 10);
+      const db = await getDb();
+      let stored = 0; const exceptions: string[] = [...(extraction.notes ?? [])];
+      const reportRows: Array<{ leader: string; tester: string; superX: number; inception: number; total: number }> = [];
+      if (db && extraction.rows.length) {
+        await ensureWorkspaceInitialized(ctx.user.id);
+        const [roster, leaderRows, projectRows] = await Promise.all([db.select().from(testers), db.select().from(teamLeaders), db.select().from(projects)]);
+        const projectByName = new Map(projectRows.map(project => [cleanName(project.name), project]));
+        for (const row of extraction.rows) {
+          const candidates = roster.filter(item => cleanName(item.name) === cleanName(row.tester));
+          const leader = leaderRows.find(item => cleanName(item.name) === cleanName(row.leader));
+          const tester = candidates.length === 1 ? candidates[0] : candidates.length > 1 ? candidates.find(item => item.teamLeaderId === leader?.id) : undefined;
+          if (!tester || !leader || tester.teamLeaderId !== leader.id) { exceptions.push(`Could not safely match ${row.tester} under ${row.leader}`); continue; }
+          const values = [{ project: projectByName.get("super x"), quantity: Number(row.superX) }, { project: projectByName.get("inception"), quantity: Number(row.inception) }];
+          if (values.some(item => !item.project || !Number.isFinite(item.quantity) || item.quantity < 0)) { exceptions.push(`Invalid project values for ${row.tester}`); continue; }
+          for (const value of values) {
+            const existing = await db.select().from(dailyPerformance).where(and(eq(dailyPerformance.businessDate, toDate(reportDate)), eq(dailyPerformance.testerId, tester.id), eq(dailyPerformance.projectId, value.project!.id))).limit(1);
+            if (existing[0]) await db.update(dailyPerformance).set({ quantity: value.quantity.toString(), source: "AI assistant", notes: latest.slice(0, 1000) }).where(eq(dailyPerformance.id, existing[0].id));
+            else await db.insert(dailyPerformance).values({ businessDate: toDate(reportDate), testerId: tester.id, teamLeaderId: leader.id, projectId: value.project!.id, quantity: value.quantity.toString(), source: "AI assistant", notes: latest.slice(0, 1000) });
+          }
+          stored += 1;
+          reportRows.push({ leader: leader.name, tester: tester.name, superX: values[0].quantity, inception: values[1].quantity, total: values[0].quantity + values[1].quantity });
+        }
+        await db.insert(imports).values({ fileName: `AI assistant ${reportDate}`, recordCount: extraction.rows.length, matchedCount: stored, exceptionCount: exceptions.length, status: exceptions.length ? "PARTIAL" : "PROCESSED", rawData: latest });
+        await addAuditLog({ action: "AI Report Imported", userId: ctx.user.id, userCommand: latest, newValue: { date: reportDate, stored, exceptions: exceptions.length } });
+      }
+      const content = extraction.rows.length ? `Stored ${stored} tester rows for ${reportDate}. I separated the data by Team Leader and kept ${exceptions.length} validation note${exceptions.length === 1 ? "" : "s"}. You can download the formatted report below.` : extraction.answer || `I received: ${latest}. Include tester names with Super X and Inception values when you want me to store a report.`;
+      return { content, ingestion: extraction.rows.length ? { date: reportDate, stored, exceptions, rows: reportRows } : null };
     }),
   }),
 });
