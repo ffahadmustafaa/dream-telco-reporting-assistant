@@ -41,27 +41,9 @@ export async function getUserByOpenId(openId: string) {
   return result[0];
 }
 
-const starterRoster = [
-  { leader: "Fahad", testers: ["RK", "Rida", "Rimsha", "Jannat", "Aneela", "Lubna", "Mudassir"] },
-  { leader: "Unaiza", testers: ["Unaiza", "Kainat Abid", "Shaban", "Dilawaiz", "Sania"] },
-  { leader: "Mehwish", testers: ["Mehwish Kouser", "Urwa", "Anoosha", "Anam", "Momina", "Maham", "Tehmina", "Ume Kalsoom", "Rabia"] },
-  { leader: "Bisma", testers: ["Bisma", "Anas", "Ahsan", "Sami"] },
-  { leader: "Aqsa", testers: ["Aqsa", "Rimsha", "Zille Umama"] },
-];
-
 export async function ensureWorkspaceInitialized(userId?: number) {
   const db = await getDb();
   if (!db) return;
-  const existingLeaders = await db.select().from(teamLeaders);
-  if (existingLeaders.length === 0) {
-    for (const group of starterRoster) {
-      const inserted = await db.insert(teamLeaders).values({ name: group.leader }).$returningId();
-      const leaderId = inserted[0]?.id;
-      if (!leaderId) continue;
-      await db.insert(testers).values(group.testers.map(name => ({ name, teamLeaderId: leaderId })));
-    }
-    await db.insert(auditLogs).values({ action: "Workspace Initialized", userId, reason: "Initial reference roster" });
-  }
   const existingProjects = await db.select().from(projects);
   const names = new Set(existingProjects.map(project => project.name));
   const defaults = ["Super X", "Inception"].filter(name => !names.has(name));
