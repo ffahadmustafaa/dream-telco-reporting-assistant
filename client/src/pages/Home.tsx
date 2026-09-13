@@ -28,13 +28,13 @@ type AssistantReport = { date: string; stored: number; exceptions: string[]; row
 
 function reportMatrix(rows: AssistantReportRow[]) {
   const leaderNames = Array.from(new Set(rows.map(row => row.leader)));
-  const matrix: Array<Array<string | number>> = [["Project", "Super x", "Inception", "Total"]];
+  const matrix: Array<Array<string | number>> = [["Project", "Inception", "Super x", "Total"]];
   for (const leader of leaderNames) {
     const group = rows.filter(row => row.leader === leader);
-    matrix.push([leader, group.reduce((sum, row) => sum + row.superX, 0), group.reduce((sum, row) => sum + row.inception, 0), group.reduce((sum, row) => sum + row.total, 0)]);
-    for (const row of group) matrix.push([row.tester, row.superX, row.inception, row.total]);
+    matrix.push([leader, group.reduce((sum, row) => sum + row.inception, 0), group.reduce((sum, row) => sum + row.superX, 0), group.reduce((sum, row) => sum + row.total, 0)]);
+    for (const row of group) matrix.push([row.tester, row.inception, row.superX, row.total]);
   }
-  matrix.push(["Grand Total", rows.reduce((sum, row) => sum + row.superX, 0), rows.reduce((sum, row) => sum + row.inception, 0), rows.reduce((sum, row) => sum + row.total, 0)]);
+  matrix.push(["Grand Total", rows.reduce((sum, row) => sum + row.inception, 0), rows.reduce((sum, row) => sum + row.superX, 0), rows.reduce((sum, row) => sum + row.total, 0)]);
   return matrix;
 }
 
