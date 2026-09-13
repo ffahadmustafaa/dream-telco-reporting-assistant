@@ -15,6 +15,13 @@
       "when": 1788700920460,
       "tag": "0001_ambitious_fantastic_four",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1789283233673,
+      "tag": "0002_woozy_the_leader",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, auditLogs, dailyPerformance, imports, payouts, projects, targets, teamLeaders, testers, users } from "../drizzle/schema";
+import { InsertUser, auditLogs, dailyPerformance, imports, payouts, payoutRules, projects, targets, teamLeaders, testers, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -80,4 +80,4 @@ export async function listAuditLogs() {
   return db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(100);
 }
 
-export { auditLogs, dailyPerformance, imports, payouts, projects, targets, teamLeaders, testers };
+export { auditLogs, dailyPerformance, imports, payouts, payoutRules, projects, targets, teamLeaders, testers };

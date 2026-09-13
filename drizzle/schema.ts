@@ -81,6 +81,17 @@ export const payouts = mysqlTable("payouts", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => ({ dateIdx: index("payout_date_idx").on(table.payoutDate), statusIdx: index("payout_status_idx").on(table.status) }));
 
+export const payoutRules = mysqlTable("payout_rules", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  testerId: int("testerId"),
+  ratePerOtp: decimal("ratePerOtp", { precision: 12, scale: 2 }),
+  fixedAmount: decimal("fixedAmount", { precision: 12, scale: 2 }),
+  status: mysqlEnum("status", ["ACTIVE", "INACTIVE"]).default("ACTIVE").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ projectIdx: index("payout_rules_project_idx").on(table.projectId), testerIdx: index("payout_rules_tester_idx").on(table.testerId) }));
+
 export const imports = mysqlTable("imports", {
   id: int("id").autoincrement().primaryKey(),
   fileName: varchar("fileName", { length: 255 }).notNull(),
@@ -113,3 +124,4 @@ export type Project = typeof projects.$inferSelect;
 export type Target = typeof targets.$inferSelect;
 export type DailyPerformance = typeof dailyPerformance.$inferSelect;
 export type Payout = typeof payouts.$inferSelect;
+export type PayoutRule = typeof payoutRules.$inferSelect;
