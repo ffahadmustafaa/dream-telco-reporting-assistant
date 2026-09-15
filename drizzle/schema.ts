@@ -7,9 +7,23 @@ export const users = mysqlTable("users", {
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  accountRole: mysqlEnum("accountRole", ["admin", "team_leader", "tester"]).default("tester").notNull(),
+  phoneNumber: varchar("phoneNumber", { length: 20 }),
+  teamLeaderId: int("teamLeaderId"),
+  isVerified: int("isVerified").default(0).notNull(),
+  accountStatus: mysqlEnum("accountStatus", ["active", "pending", "blocked"]).default("pending").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+});
+
+export const otpVerifications = mysqlTable("otp_verifications", {
+  id: int("id").autoincrement().primaryKey(),
+  identifier: varchar("identifier", { length: 150 }).notNull(),
+  otpCode: varchar("otpCode", { length: 6 }).notNull(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  isUsed: int("isUsed").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export const teamLeaders = mysqlTable("team_leaders", {
@@ -118,6 +132,7 @@ export const auditLogs = mysqlTable("audit_logs", {
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+export type OtpVerification = typeof otpVerifications.$inferSelect;
 export type TeamLeader = typeof teamLeaders.$inferSelect;
 export type Tester = typeof testers.$inferSelect;
 export type Project = typeof projects.$inferSelect;

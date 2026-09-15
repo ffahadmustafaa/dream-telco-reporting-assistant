@@ -2,8 +2,8 @@ import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { invokeLLM } from "./_core/llm";
-import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { addAuditLog, dailyPerformance, ensureWorkspaceInitialized, getDb, getWorkspaceData, imports, listAuditLogs, payouts, payoutRules, projects, targets, teamLeaders, testers } from "./db";
+import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { addAuditLog, dailyPerformance, ensureWorkspaceInitialized, getDb, getWorkspaceData, imports, listAuditLogs, otpVerifications, payouts, payoutRules, projects, targets, teamLeaders, testers, users } from "./db";
 import { and, desc, eq } from "drizzle-orm";
 
 const dateInput = z.string().optional();
@@ -18,6 +18,14 @@ export const appRouter = router({
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => { ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 }); return { success: true } as const; }),
+    requestOtp: publicProcedure.input(z.object({ identifier: z.string().min(3).max(150) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new Error("Database is unavailable"); const otpCode = String(Math.floor(100000 + Math.random() * 900000)); await db.insert(otpVerifications).values({ identifier: input.identifier.trim().toLowerCase(), otpCode, expiresAt: new Date(Date.now() + 10 * 60 * 1000) }); return { accepted: true, deliveryConfigured: false, message: "Verification record created. Configure an email/SMS provider before using this for production delivery." }; }),
+    verifyOtp: protectedProcedure.input(z.object({ identifier: z.string().min(3).max(150), otpCode: z.string().length(6) })).mutation(async ({ ctx, input }) => { const db = await getDb(); if (!db) throw new Error("Database is unavailable"); const match = (await db.select().from(otpVerifications)).reverse().find(item => item.identifier === input.identifier.trim().toLowerCase() && item.otpCode === input.otpCode && item.isUsed === 0 && item.expiresAt > new Date()); if (!match) throw new Error("Invalid or expired OTP"); await db.update(otpVerifications).set({ isUsed: 1 }).where(eq(otpVerifications.id, match.id)); await db.update(users).set({ isVerified: 1, accountStatus: "active" }).where(eq(users.id, ctx.user.id)); return { success: true }; }),
+  }),
+  userManagement: router({
+    directory: adminProcedure.query(async () => { const db = await getDb(); if (!db) return []; const [rows, leaders] = await Promise.all([db.select().from(users).orderBy(desc(users.createdAt)), db.select().from(teamLeaders)]); return rows.map(user => ({ ...user, teamLeader: leaders.find(leader => leader.id === user.teamLeaderId)?.name ?? null })); }),
+    updateStatus: adminProcedure.input(z.object({ userId: z.number(), status: z.enum(["active", "pending", "blocked"]), isVerified: z.number().int().min(0).max(1).optional() })).mutation(async ({ ctx, input }) => { const db = await getDb(); if (!db) throw new Error("Database is unavailable"); if (input.userId === ctx.user.id && input.status === "blocked") throw new Error("You cannot block the current admin session"); await db.update(users).set({ accountStatus: input.status, isVerified: input.isVerified ?? (input.status === "active" ? 1 : 0) }).where(eq(users.id, input.userId)); await addAuditLog({ action: "User Status Updated", userId: ctx.user.id, newValue: input, reason: "Admin moderation" }); return { success: true }; }),
+    updateRole: adminProcedure.input(z.object({ userId: z.number(), accountRole: z.enum(["admin", "team_leader", "tester"]), teamLeaderId: z.number().nullable().optional() })).mutation(async ({ ctx, input }) => { const db = await getDb(); if (!db) throw new Error("Database is unavailable"); if (input.userId === ctx.user.id && input.accountRole !== "admin") throw new Error("The owner admin role cannot be removed from the current session"); await db.update(users).set({ accountRole: input.accountRole, teamLeaderId: input.accountRole === "tester" ? input.teamLeaderId ?? null : null }).where(eq(users.id, input.userId)); await addAuditLog({ action: "User Role Updated", userId: ctx.user.id, newValue: input, reason: "Admin role assignment" }); return { success: true }; }),
+    delete: adminProcedure.input(z.object({ userId: z.number() })).mutation(async ({ ctx, input }) => { const db = await getDb(); if (!db) throw new Error("Database is unavailable"); if (input.userId === ctx.user.id) throw new Error("You cannot delete the current admin session"); const old = (await db.select().from(users).where(eq(users.id, input.userId)).limit(1))[0]; if (!old) throw new Error("User not found"); await db.delete(users).where(eq(users.id, input.userId)); await addAuditLog({ action: "User Deleted", userId: ctx.user.id, oldValue: old, reason: "Admin moderation" }); return { success: true }; }),
   }),
   dashboard: router({
     overview: protectedProcedure.input(z.object({ date: dateInput })).query(async ({ ctx, input }) => {
