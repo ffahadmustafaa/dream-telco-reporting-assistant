@@ -26,6 +26,16 @@ export const otpVerifications = mysqlTable("otp_verifications", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const userSessions = mysqlTable("user_sessions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().unique(),
+  identifier: varchar("identifier", { length: 150 }),
+  role: varchar("role", { length: 40 }).notNull(),
+  loginAt: timestamp("loginAt").defaultNow().notNull(),
+  lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
+  isActive: int("isActive").default(1).notNull(),
+});
+
 export const teamLeaders = mysqlTable("team_leaders", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 160 }).notNull().unique(),
@@ -133,6 +143,7 @@ export const auditLogs = mysqlTable("audit_logs", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type OtpVerification = typeof otpVerifications.$inferSelect;
+export type UserSession = typeof userSessions.$inferSelect;
 export type TeamLeader = typeof teamLeaders.$inferSelect;
 export type Tester = typeof testers.$inferSelect;
 export type Project = typeof projects.$inferSelect;
