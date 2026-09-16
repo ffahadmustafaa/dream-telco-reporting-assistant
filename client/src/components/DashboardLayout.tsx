@@ -18,6 +18,7 @@ const menuItems = [
   { icon: Flag, label: "Targets", path: "/targets" },
   { icon: ReceiptText, label: "Audit trail", path: "/audit" },
   { icon: Bot, label: "AI assistant", path: "/assistant" },
+  { icon: Users, label: "Admin dashboard", path: "/admin", adminOnly: true },
   { icon: Users, label: "User directory", path: "/users", adminOnly: true },
 ];
 const SIDEBAR_WIDTH_KEY = "dream-telco-sidebar-width";

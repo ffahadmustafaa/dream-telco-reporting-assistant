@@ -50,6 +50,13 @@
       "when": 1789547169893,
       "tag": "0006_melodic_toxin",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1789576999747,
+      "tag": "0007_milky_annihilus",
+      "breakpoints": true
     }
   ]
 }

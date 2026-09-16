@@ -114,6 +114,7 @@ export const payouts = mysqlTable("payouts", {
   transactionId: varchar("transactionId", { length: 160 }),
   sourceFile: varchar("sourceFile", { length: 255 }),
   status: mysqlEnum("status", ["MATCHED", "UNMATCHED", "POSSIBLE_MATCH", "DUPLICATE", "MISSING_AMOUNT", "CONFLICT"]).default("MATCHED").notNull(),
+  reviewStatus: mysqlEnum("reviewStatus", ["PENDING", "APPROVED", "REJECTED", "PAID"]).default("PENDING").notNull(),
   notes: text("notes"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => ({ dateIdx: index("payout_date_idx").on(table.payoutDate), statusIdx: index("payout_status_idx").on(table.status) }));
