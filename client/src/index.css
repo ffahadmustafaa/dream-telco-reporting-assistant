@@ -35,3 +35,17 @@ button:active { transform: scale(.98); }
 @keyframes rise-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 ::selection { background: #a7f3d0; color: #064e3b; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+
+/* Shared theme contrast guardrails for pages that use legacy slate utilities. */
+.dark .text-slate-950, .dark .text-slate-900, .dark .text-slate-800, .dark .text-slate-700 { color: #f8fafc !important; }
+.dark .text-slate-600, .dark .text-slate-500 { color: #cbd5e1 !important; }
+.dark .bg-white { background-color: #172033 !important; }
+.dark .bg-slate-50, .dark .bg-slate-50\/70 { background-color: #1e293b !important; }
+.dark .border-slate-100, .dark .border-slate-200 { border-color: #334155 !important; }
+.dark input, .dark textarea, .dark [role="combobox"] { background-color: #172033; color: #f8fafc; border-color: #475569; }
+.dark input::placeholder, .dark textarea::placeholder { color: #94a3b8; }
+@media (max-width: 639px) {
+  [data-slot="card-header"] { padding-left: 1rem; padding-right: 1rem; }
+  [data-slot="card-content"] { padding-left: 1rem; padding-right: 1rem; }
+  table { min-width: 620px; }
+}

@@ -82,7 +82,7 @@ function downloadAssistantImage(report: AssistantReport) {
 }
 
 function SectionHeading({ eyebrow, title, description, action }: { eyebrow: string; title: string; description?: string; action?: React.ReactNode }) {
-  return <div className="mb-7 flex items-end justify-between gap-4"><div><p className="mb-2 text-[11px] font-bold uppercase tracking-[0.22em] text-emerald-600">{eyebrow}</p><h1 className="font-display text-3xl font-semibold tracking-tight text-slate-950">{title}</h1>{description && <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{description}</p>}</div>{action}</div>;
+  return <div className="mb-7 flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end"><div><p className="mb-2 text-[11px] font-bold uppercase tracking-[0.22em] text-emerald-600">{eyebrow}</p><h1 className="font-display text-3xl font-semibold tracking-tight text-slate-950">{title}</h1>{description && <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{description}</p>}</div><div className="w-full shrink-0 sm:w-auto">{action}</div></div>;
 }
 
 function MetricCard({ label, value, detail, icon: Icon, tone = "default", trend }: { label: string; value: string; detail: string; icon: typeof BarChart3; tone?: "default" | "green" | "amber" | "violet"; trend?: "up" | "down" }) {
@@ -92,7 +92,7 @@ function MetricCard({ label, value, detail, icon: Icon, tone = "default", trend 
 }
 
 function AuthFrame({ eyebrow, title, description, children }: { eyebrow: string; title: string; description: string; children: React.ReactNode }) {
-  return <div className="flex min-h-[calc(100vh-130px)] items-center justify-center"><Card className="w-full max-w-xl overflow-hidden border-slate-200 bg-white shadow-xl"><div className="bg-slate-950 px-8 py-8 text-white"><img src="/manus-storage/dream-telco-logo_561b5517.png" alt="Dream Telco" className="mb-5 h-16 w-16 rounded-2xl bg-black object-contain" /><p className="text-[10px] font-bold uppercase tracking-[0.24em] text-orange-300">{eyebrow}</p><h1 className="mt-3 font-display text-3xl font-semibold tracking-tight">{title}</h1><p className="mt-3 max-w-md text-sm leading-6 text-slate-300">{description}</p></div><CardContent className="p-8">{children}</CardContent></Card></div>;
+  return <div className="flex min-h-[calc(100vh-130px)] items-center justify-center"><Card className="w-full max-w-xl overflow-hidden border-slate-200 bg-white shadow-xl"><div className="bg-slate-950 px-8 py-8 text-white"><img src="/manus-storage/Screenshot2026-09-16230823_62dbf263.png" alt="Dream Telco" className="mb-5 h-16 w-16 rounded-2xl bg-black object-contain" /><p className="text-[10px] font-bold uppercase tracking-[0.24em] text-orange-300">{eyebrow}</p><h1 className="mt-3 font-display text-3xl font-semibold tracking-tight">{title}</h1><p className="mt-3 max-w-md text-sm leading-6 text-slate-300">{description}</p></div><CardContent className="p-8">{children}</CardContent></Card></div>;
 }
 
 function LoginPage() {
