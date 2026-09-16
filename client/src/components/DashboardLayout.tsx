@@ -4,13 +4,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { useIsMobile } from "@/hooks/useMobile";
 import { Activity, Bot, ClipboardList, FileBarChart, FileSpreadsheet, Flag, LayoutDashboard, LogOut, PanelLeft, ReceiptText, Users, WalletCards } from "lucide-react";
-
-const DREAM_TELCO_LOGO = "/manus-storage/dream-telco-logo_561b5517.png";
-
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
+
+const DREAM_TELCO_LOGO = "/manus-storage/dream-telco-logo_561b5517.png";
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Overview", path: "/" },
