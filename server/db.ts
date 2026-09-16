@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, auditLogs, dailyPerformance, imports, otpVerifications, payouts, payoutRules, projects, targets, teamLeaders, testers, userSessions, users } from "../drizzle/schema";
+import { InsertUser, auditLogs, authChallenges, dailyPerformance, imports, otpVerifications, payouts, payoutRules, projects, targets, teamLeaders, testers, userSessions, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -27,7 +27,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     if (user[field] !== undefined) { values[field] = user[field] ?? null; updateSet[field] = user[field] ?? null; }
   }
   if (user.lastSignedIn !== undefined) { values.lastSignedIn = user.lastSignedIn; updateSet.lastSignedIn = user.lastSignedIn; }
-  if (user.email?.toLowerCase() === "ffahadmustafaa@gmail.com" || user.openId === ENV.ownerOpenId) { values.role = "admin"; values.accountRole = "admin"; values.isVerified = 1; values.accountStatus = "active"; updateSet.role = "admin"; updateSet.accountRole = "admin"; updateSet.isVerified = 1; updateSet.accountStatus = "active"; }
+  if (user.email?.toLowerCase() === "ffahadmustafaa@gmail.com" || user.openId === ENV.ownerOpenId) { values.role = "admin"; values.accountRole = "admin"; values.emailVerified = 1; values.phoneVerified = 1; values.isVerified = 1; values.accountStatus = "active"; updateSet.role = "admin"; updateSet.accountRole = "admin"; updateSet.emailVerified = 1; updateSet.phoneVerified = 1; updateSet.isVerified = 1; updateSet.accountStatus = "active"; }
   else if (user.role !== undefined) { values.role = user.role; updateSet.role = user.role; }
   values.lastSignedIn ??= new Date();
   if (!Object.keys(updateSet).length) updateSet.lastSignedIn = new Date();
@@ -80,4 +80,4 @@ export async function listAuditLogs() {
   return db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(100);
 }
 
-export { auditLogs, dailyPerformance, imports, otpVerifications, payouts, payoutRules, projects, targets, teamLeaders, testers, userSessions, users };
+export { auditLogs, authChallenges, dailyPerformance, imports, otpVerifications, payouts, payoutRules, projects, targets, teamLeaders, testers, userSessions, users };

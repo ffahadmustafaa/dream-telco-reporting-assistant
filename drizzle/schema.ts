@@ -10,6 +10,8 @@ export const users = mysqlTable("users", {
   accountRole: mysqlEnum("accountRole", ["admin", "team_leader", "tester"]).default("tester").notNull(),
   phoneNumber: varchar("phoneNumber", { length: 20 }),
   teamLeaderId: int("teamLeaderId"),
+  emailVerified: int("emailVerified").default(0).notNull(),
+  phoneVerified: int("phoneVerified").default(0).notNull(),
   isVerified: int("isVerified").default(0).notNull(),
   accountStatus: mysqlEnum("accountStatus", ["active", "pending", "blocked"]).default("pending").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -34,6 +36,16 @@ export const userSessions = mysqlTable("user_sessions", {
   loginAt: timestamp("loginAt").defaultNow().notNull(),
   lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
   isActive: int("isActive").default(1).notNull(),
+});
+
+export const authChallenges = mysqlTable("auth_challenges", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  emailOtp: varchar("emailOtp", { length: 6 }).notNull(),
+  phoneOtp: varchar("phoneOtp", { length: 6 }).notNull(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  isCompleted: int("isCompleted").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export const teamLeaders = mysqlTable("team_leaders", {
@@ -144,6 +156,7 @@ export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type OtpVerification = typeof otpVerifications.$inferSelect;
 export type UserSession = typeof userSessions.$inferSelect;
+export type AuthChallenge = typeof authChallenges.$inferSelect;
 export type TeamLeader = typeof teamLeaders.$inferSelect;
 export type Tester = typeof testers.$inferSelect;
 export type Project = typeof projects.$inferSelect;
