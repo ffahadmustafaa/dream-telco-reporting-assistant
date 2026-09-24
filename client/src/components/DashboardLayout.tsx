@@ -44,12 +44,7 @@ import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
 
-const DREAM_TELCO_LOGO_LIGHT =
-  "/manus-storage/dream-telco-logo-light_3777217f.png";
-const DREAM_TELCO_LOGO_SOURCE =
-  "/manus-storage/Screenshot2026-09-16230823_62dbf263.png";
-const DREAM_TELCO_LOGO_DARK =
-  "/manus-storage/dream-telco-logo-dark_10a72ee7.png";
+const DREAM_TELCO_LOGO = "/dream-telco-logo.png";
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Overview", path: "/" },
@@ -107,10 +102,10 @@ export default function DashboardLayout({
             <picture>
               <source
                 media="(prefers-color-scheme: dark)"
-                srcSet={DREAM_TELCO_LOGO_SOURCE}
+                srcSet={DREAM_TELCO_LOGO}
               />
               <img
-                src={DREAM_TELCO_LOGO_LIGHT}
+                src={DREAM_TELCO_LOGO}
                 alt="Dream Telco"
                 className="mb-8 h-20 w-20 rounded-2xl object-contain shadow-sm"
               />
@@ -264,12 +259,12 @@ function DashboardLayoutContent({
                 <img
                   src={
                     theme === "dark"
-                      ? DREAM_TELCO_LOGO_DARK
-                      : DREAM_TELCO_LOGO_LIGHT
+                      ? DREAM_TELCO_LOGO
+                      : DREAM_TELCO_LOGO
                   }
                   onError={event => {
                     event.currentTarget.src =
-                      "/manus-storage/Screenshot2026-09-16230823_62dbf263.png";
+                      DREAM_TELCO_LOGO;
                   }}
                   alt="Dream Telco logo"
                   className="h-full w-full object-contain"
@@ -362,12 +357,12 @@ function DashboardLayoutContent({
                 <img
                   src={
                     theme === "dark"
-                      ? DREAM_TELCO_LOGO_DARK
-                      : DREAM_TELCO_LOGO_LIGHT
+                      ? DREAM_TELCO_LOGO
+                      : DREAM_TELCO_LOGO
                   }
                   onError={event => {
                     event.currentTarget.src =
-                      "/manus-storage/Screenshot2026-09-16230823_62dbf263.png";
+                      DREAM_TELCO_LOGO;
                   }}
                   alt="Dream Telco logo"
                   className="h-full w-full object-contain"

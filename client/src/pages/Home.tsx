@@ -92,7 +92,7 @@ function MetricCard({ label, value, detail, icon: Icon, tone = "default", trend 
 }
 
 function AuthFrame({ eyebrow, title, description, children }: { eyebrow: string; title: string; description: string; children: React.ReactNode }) {
-  return <div className="flex min-h-[calc(100vh-130px)] items-center justify-center"><Card className="w-full max-w-xl overflow-hidden border-slate-200 bg-white shadow-xl"><div className="bg-slate-950 px-8 py-8 text-white"><img src="/manus-storage/Screenshot2026-09-16230823_62dbf263.png" alt="Dream Telco" className="mb-5 h-16 w-16 rounded-2xl bg-black object-contain" /><p className="text-[10px] font-bold uppercase tracking-[0.24em] text-orange-300">{eyebrow}</p><h1 className="mt-3 font-display text-3xl font-semibold tracking-tight">{title}</h1><p className="mt-3 max-w-md text-sm leading-6 text-slate-300">{description}</p></div><CardContent className="p-8">{children}</CardContent></Card></div>;
+  return <div className="flex min-h-[calc(100vh-130px)] items-center justify-center"><Card className="w-full max-w-xl overflow-hidden border-slate-200 bg-white shadow-xl"><div className="bg-slate-950 px-8 py-8 text-white"><img src="/dream-telco-logo.png" alt="Dream Telco" className="mb-5 h-16 w-16 rounded-2xl bg-black object-contain" /><p className="text-[10px] font-bold uppercase tracking-[0.24em] text-orange-300">{eyebrow}</p><h1 className="mt-3 font-display text-3xl font-semibold tracking-tight">{title}</h1><p className="mt-3 max-w-md text-sm leading-6 text-slate-300">{description}</p></div><CardContent className="p-8">{children}</CardContent></Card></div>;
 }
 
 function LoginPage() {

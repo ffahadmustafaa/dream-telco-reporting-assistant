@@ -1,8 +1,8 @@
 import { useTheme } from "@/contexts/ThemeContext";
 import { Skeleton } from "./ui/skeleton";
 
-const DREAM_TELCO_LOGO_LIGHT = "/manus-storage/dream-telco-logo-light_3777217f.png";
-const DREAM_TELCO_LOGO_DARK = "/manus-storage/dream-telco-logo-dark_10a72ee7.png";
+const DREAM_TELCO_LOGO_LIGHT = "/dream-telco-logo.png";
+const DREAM_TELCO_LOGO_DARK = "/dream-telco-logo.png";
 
 export function DashboardLayoutSkeleton() {
   const { theme } = useTheme();
