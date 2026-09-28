@@ -1,4 +1,4 @@
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
 import { notifyOwner } from "./_core/notification";
 
 export type ReportRow = { leader: string; tester: string; values: Record<string, number>; total: number };
@@ -16,8 +16,8 @@ export function buildReportWorkbook(date: string, projects: string[], rows: Repo
   }
   matrix.push(["Grand Total", ...projects.map(project => rows.reduce((sum, row) => sum + (row.values[project] ?? 0), 0)), rows.reduce((sum, row) => sum + row.total, 0)]);
   const sheet = XLSX.utils.aoa_to_sheet(matrix);
-  const headerStyle = { fill: { fgColor: { rgb: "9FC5E8" } }, font: { bold: true, color: { rgb: "000000" } }, alignment: { horizontal: "center" } };
-  const leaderStyle = { fill: { fgColor: { rgb: "C6E0B4" } }, font: { bold: true, color: { rgb: "000000" } } };
+  const headerStyle = { fill: { fgColor: { rgb: "D9E1F2" } }, font: { bold: true, color: { rgb: "000000" } }, alignment: { horizontal: "center" } };
+  const leaderStyle = { fill: { fgColor: { rgb: "D9EAD3" } }, font: { bold: true, color: { rgb: "000000" } } };
   const totalStyle = { fill: { fgColor: { rgb: "B4C6E7" } }, font: { bold: true, color: { rgb: "0F172A" } } };
   for (let column = 0; column < matrix[0]!.length; column++) { const cell = sheet[XLSX.utils.encode_cell({ r: 0, c: column })] as any; if (cell) cell.s = headerStyle; }
   let rowIndex = 1; for (const leader of leaders) { const group = rows.filter(row => row.leader === leader); for (let column = 0; column < matrix[0]!.length; column++) { const cell = sheet[XLSX.utils.encode_cell({ r: rowIndex, c: column })] as any; if (cell) cell.s = leaderStyle; } rowIndex += group.length + 1; }

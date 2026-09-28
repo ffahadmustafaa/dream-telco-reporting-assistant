@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildReportWorkbook, reportDeliveryConfig } from "./reportDelivery";
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
 
 describe("daily report delivery", () => {
   it("creates a non-empty workbook with grouped report sheets", () => {
@@ -10,9 +10,12 @@ describe("daily report delivery", () => {
     ]);
     expect(workbook).toBeInstanceOf(Buffer);
     expect(workbook.length).toBeGreaterThan(100);
-    const parsed = XLSX.read(workbook, { type: "buffer" });
+    const parsed = XLSX.read(workbook, { type: "buffer", cellStyles: true });
     expect(parsed.SheetNames).toEqual(["Daily Report", "Raw Data"]);
     expect(XLSX.utils.sheet_to_json(parsed.Sheets["Daily Report"], { header: 1 })[0]).toEqual(["Project", "Super X", "Inception", "Total"]);
+    expect((parsed.Sheets["Daily Report"] as any).A1.s.fgColor.rgb).toBe("D9E1F2");
+    expect((parsed.Sheets["Daily Report"] as any).A2.s.fgColor.rgb).toBe("D9EAD3");
+    expect((parsed.Sheets["Daily Report"] as any).A5.s.fgColor.rgb).toBe("B4C6E7");
   });
 
   it("uses the configured recipient and reports provider readiness", () => {

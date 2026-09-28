@@ -37,7 +37,7 @@ export async function compileDailyReport(date = karachiDate()) {
   const rows: ReportRow[] = Array.from(totals.entries()).map(([key, values]) => { const [leader, tester] = key.split("||"); return { leader: leader ?? "Unassigned", tester: tester ?? "Unknown", values: Object.fromEntries(projectRows.map(project => [project.name, values.get(project.name) ?? 0])), total: projectRows.reduce((sum, project) => sum + (values.get(project.name) ?? 0), 0) }; });
   const workbook = buildReportWorkbook(date, projectRows.map(project => project.name), rows);
   const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
-  const summary = `Date: ${date}\nActive Team Leaders: ${leaderRows.length}\nActive Testers: ${testerRows.length}\nTester rows: ${rows.length}\nGrand Total OTP: ${grandTotal}`;
+  const summary = `Date: ${date}\nTeam Leaders: ${leaderRows.length}\nRoster Testers (including inactive): ${testerRows.length}\nTester rows: ${rows.length}\nGrand Total OTP: ${grandTotal}`;
   return { date, projects: projectRows.map(project => project.name), rows, workbook, summary, grandTotal };
 }
 
