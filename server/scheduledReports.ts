@@ -12,8 +12,8 @@ export async function compileDailyReport(date = karachiDate()) {
   if (!db) throw new Error("Database is unavailable");
   const [projectRows, leaderRows, testerRows, performance] = await Promise.all([
     db.select().from(projects).where(eq(projects.status, "ACTIVE")).orderBy(projects.id),
-    db.select().from(teamLeaders).where(eq(teamLeaders.status, "ACTIVE")).orderBy(teamLeaders.id),
-    db.select().from(testers).where(eq(testers.status, "ACTIVE")).orderBy(testers.id),
+    db.select().from(teamLeaders).orderBy(teamLeaders.id),
+    db.select().from(testers).orderBy(testers.id),
     db.select().from(dailyPerformance).where(and(eq(dailyPerformance.businessDate, toDate(date)))),
   ]);
   const projectsById = new Map(projectRows.map(project => [project.id, project.name]));
