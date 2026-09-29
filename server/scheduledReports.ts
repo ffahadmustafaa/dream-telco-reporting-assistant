@@ -44,9 +44,15 @@ export async function compileDailyReport(date = karachiDate()) {
 export async function scheduledDailyReport(req: Request, res: Response) {
   const context = { url: req.originalUrl, taskUid: undefined as string | undefined, timestamp: new Date().toISOString() };
   try {
-    const user = await sdk.authenticateRequest(req);
-    context.taskUid = user.taskUid;
-    if (!user.isCron || !user.taskUid) return res.status(403).json({ error: "cron-only" });
+    const cronSecret = process.env.REPORT_CRON_SECRET ?? process.env.CRON_SECRET;
+    const bearer = req.headers.authorization ?? "";
+    if (cronSecret && bearer === `Bearer ${cronSecret}`) {
+      context.taskUid = "vercel-cron";
+    } else {
+      const user = await sdk.authenticateRequest(req);
+      context.taskUid = user.taskUid;
+      if (!user.isCron || !user.taskUid) return res.status(403).json({ error: "cron-only" });
+    }
     const report = await compileDailyReport();
     const delivery = await deliverDailyReport(report.date, report.workbook, report.summary);
     return res.json({ ok: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery });

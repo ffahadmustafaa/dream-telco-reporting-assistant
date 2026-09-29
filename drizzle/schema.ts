@@ -135,6 +135,7 @@ export const imports = mysqlTable("imports", {
   fileName: varchar("fileName", { length: 255 }).notNull(),
   sourceKey: varchar("sourceKey", { length: 500 }),
   sourceUrl: varchar("sourceUrl", { length: 500 }),
+  uploadedBy: int("uploadedBy"),
   recordCount: int("recordCount").default(0).notNull(),
   matchedCount: int("matchedCount").default(0).notNull(),
   exceptionCount: int("exceptionCount").default(0).notNull(),
