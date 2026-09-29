@@ -9,6 +9,9 @@ export const AUTH_DELIVERY_CONFIG = {
 
 export const isSandboxAuth = AUTH_DELIVERY_CONFIG.mode === "sandbox" || !AUTH_DELIVERY_CONFIG.emailApiKeyConfigured || !AUTH_DELIVERY_CONFIG.smsApiKeyConfigured;
 
+/** Email-only sandbox check: password-reset emails must not depend on SMS credentials. */
+const isEmailSandbox = AUTH_DELIVERY_CONFIG.mode === "sandbox" || !AUTH_DELIVERY_CONFIG.emailApiKeyConfigured;
+
 async function sendResendEmail(to: string, subject: string, text: string) {
   const apiKey = process.env.AUTH_EMAIL_API_KEY;
   if (!apiKey) throw new Error("AUTH_EMAIL_API_KEY is not configured");
@@ -46,4 +49,12 @@ export async function sendDualOtp(toEmail: string, toPhone: string, emailOtp: st
     sendTwilioSms(toPhone, `Dream Telco phone verification code: ${phoneOtp}. It expires in 10 minutes.`),
   ]);
   return { sandbox: false };
+}
+
+/** Send a single security email (e.g. password reset). Returns whether it was really sent. */
+export async function sendSecurityEmail(toEmail: string, subject: string, text: string) {
+  if (isEmailSandbox) return { sent: false, sandbox: true };
+  if (AUTH_DELIVERY_CONFIG.emailProvider.toLowerCase() !== "resend") throw new Error("Set AUTH_EMAIL_PROVIDER=resend for production email delivery");
+  await sendResendEmail(toEmail, subject, text);
+  return { sent: true, sandbox: false };
 }

@@ -46,7 +46,7 @@ export async function ensureWorkspaceInitialized(userId?: number) {
   if (!db) return;
   const existingProjects = await db.select().from(projects);
   const names = new Set(existingProjects.map(project => project.name));
-  const defaults = ["Super X", "Inception"].filter(name => !names.has(name));
+  const defaults = ["Section X", "Super X"].filter(name => !names.has(name));
   if (defaults.length) await db.insert(projects).values(defaults.map(name => ({ name })));
 }
 

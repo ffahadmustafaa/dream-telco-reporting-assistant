@@ -44,3 +44,16 @@ export async function deliverDailyReport(date: string, workbook: Buffer, summary
 export function reportDeliveryConfig() {
   return { provider: process.env.REPORT_EMAIL_PROVIDER ?? "owner notification fallback", recipient: reportEmail, emailConfigured: Boolean(process.env.REPORT_EMAIL_API_KEY && process.env.REPORT_EMAIL_PROVIDER) };
 }
+
+/** Send a plain-text email through the configured Resend provider. Throws when unconfigured. */
+export async function sendSimpleEmail(to: string, subject: string, text: string) {
+  const provider = process.env.REPORT_EMAIL_PROVIDER?.toLowerCase();
+  const apiKey = process.env.REPORT_EMAIL_API_KEY;
+  if (provider !== "resend" || !apiKey) throw new Error("Email delivery is not configured (set REPORT_EMAIL_PROVIDER=resend and REPORT_EMAIL_API_KEY).");
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: reportFrom, to: [to], subject, text }),
+  });
+  if (!response.ok) throw new Error(`Email provider failed (${response.status})`);
+}
