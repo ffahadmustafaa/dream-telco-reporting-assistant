@@ -1,9 +1,10 @@
-import type { Request, Response } from "express";
-import { createApp } from "../server/_core/app";
+// Vercel compiles this file as the /api serverless function. The real handler
+// is pre-bundled by esbuild (see the build script in package.json) into
+// ./_server.cjs, with everything under ../server inlined. Vercel's own file
+// tracer does not follow imports outside api/, so importing ../server directly
+// here ships a function that crashes with ERR_MODULE_NOT_FOUND at runtime.
+// @ts-ignore - generated at build time, not present during typechecking
+import bundle from "./_server.cjs";
 
-const app = createApp();
-
-/** Vercel serverless entry point. vercel.json rewrites /api/(.*) here. */
-export default function handler(req: Request, res: Response) {
-  app(req, res);
-}
+const handler = (bundle as any)?.default || bundle;
+export default handler;
