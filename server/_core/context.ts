@@ -1,7 +1,7 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import type { User } from "../../drizzle/schema";
-import { sdk } from "./sdk";
-import { getDb, userSessions } from "../db";
+import type { User } from "../db";
+import { authenticateRequest } from "./session";
+import { insertUserSession, listUserSessions, updateUserSessionByUserId } from "../db";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
@@ -15,11 +15,22 @@ export async function createContext(
   let user: User | null = null;
 
   try {
-    user = await sdk.authenticateRequest(opts.req);
-    if (user) {
-      const db = await getDb();
-      if (db) {
-        await db.insert(userSessions).values({ userId: user.id, identifier: user.email ?? null, role: user.accountRole ?? user.role, isActive: 1 }).onDuplicateKeyUpdate({ set: { identifier: user.email ?? null, role: user.accountRole ?? user.role, lastSeenAt: new Date(), isActive: 1 } });
+    const sessionUser = await authenticateRequest(opts.req);
+    if (sessionUser) {
+      user = sessionUser;
+      const currentUser = sessionUser;
+      const now = new Date();
+      const existing = (await listUserSessions()).find((session) => session.userId === currentUser.id);
+      const values = {
+        identifier: currentUser.email ?? null,
+        role: currentUser.accountRole ?? currentUser.role,
+        lastSeenAt: now,
+        isActive: 1,
+      };
+      if (existing) {
+        await updateUserSessionByUserId(currentUser.id, values);
+      } else {
+        await insertUserSession({ userId: currentUser.id, ...values, loginAt: now });
       }
     }
   } catch (error) {

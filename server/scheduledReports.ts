@@ -1,20 +1,24 @@
 import type { Request, Response } from "express";
-import { and, eq } from "drizzle-orm";
-import { dailyPerformance, getDb, projects, teamLeaders, testers } from "./db";
-import { sdk } from "./_core/sdk";
+import {
+  isDbConfigured,
+  listActiveProjects,
+  listPerformanceByDate,
+  listTeamLeaders,
+  listTesters,
+} from "./db";
+import { authenticateRequest } from "./_core/session";
 import { buildReportWorkbook, deliverDailyReport, type ReportRow } from "./reportDelivery";
 
 const karachiDate = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const toDate = (date: string) => new Date(`${date}T00:00:00.000Z`);
 
 export async function compileDailyReport(date = karachiDate()) {
-  const db = await getDb();
-  if (!db) throw new Error("Database is unavailable");
+  if (!isDbConfigured()) throw new Error("Database is unavailable");
   const [projectRows, leaderRows, testerRows, performance] = await Promise.all([
-    db.select().from(projects).where(eq(projects.status, "ACTIVE")).orderBy(projects.id),
-    db.select().from(teamLeaders).orderBy(teamLeaders.id),
-    db.select().from(testers).orderBy(testers.id),
-    db.select().from(dailyPerformance).where(and(eq(dailyPerformance.businessDate, toDate(date)))),
+    listActiveProjects(),
+    listTeamLeaders(),
+    listTesters(),
+    listPerformanceByDate(toDate(date)),
   ]);
   const projectsById = new Map(projectRows.map(project => [project.id, project.name]));
   const leadersById = new Map(leaderRows.map(leader => [leader.id, leader.name]));
@@ -49,9 +53,10 @@ export async function scheduledDailyReport(req: Request, res: Response) {
     if (cronSecret && bearer === `Bearer ${cronSecret}`) {
       context.taskUid = "vercel-cron";
     } else {
-      const user = await sdk.authenticateRequest(req);
-      context.taskUid = user.taskUid;
-      if (!user.isCron || !user.taskUid) return res.status(403).json({ error: "cron-only" });
+      // Fallback: an authenticated admin session may trigger the report manually.
+      const user = await authenticateRequest(req);
+      if (user.accountRole !== "admin" && user.role !== "admin") return res.status(403).json({ error: "admin-only" });
+      context.taskUid = `manual:${user.id}`;
     }
     const report = await compileDailyReport();
     const delivery = await deliverDailyReport(report.date, report.workbook, report.summary);
