@@ -114,4 +114,5 @@ client/public/__manus__/version.json
 .project-config.json
 
 # Generated serverless API bundle (built by `pnpm run build`)
+api/_server.mjs
 api/_server.cjs
