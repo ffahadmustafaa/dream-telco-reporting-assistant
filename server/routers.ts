@@ -300,7 +300,7 @@ export const appRouter = router({
       if (!user) throw new Error("Registration account not found");
       const emailOtp = isSandboxAuth ? "123456" : String(Math.floor(100000 + Math.random() * 900000));
       const phoneOtp = isSandboxAuth ? "123456" : String(Math.floor(100000 + Math.random() * 900000));
-      await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp, expiresAt: new Date(Date.now() + 10 * 60 * 1000) });
+      await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp, expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0 });
       await sendDualOtp(user.email ?? "", user.phoneNumber ?? "", emailOtp, phoneOtp);
       return { sandboxMode: isSandboxAuth, emailOtp: isSandboxAuth ? emailOtp : "", phoneOtp: isSandboxAuth ? phoneOtp : "", expiresInMinutes: 10, message: isSandboxAuth ? "Sandbox mode: use the displayed test codes." : "Dual OTP sent to the registered email and phone." };
     }),
@@ -341,7 +341,7 @@ export const appRouter = router({
       const user = (await listUsers()).find(item => item.email?.toLowerCase() === identifier || item.phoneNumber?.toLowerCase() === identifier);
       if (!user || !user.email) return { accepted: true, sandboxMode: true, resetCode: String(Math.floor(100000 + Math.random() * 900000)) }; // no account enumeration: same shape, dummy code never stored
       const resetCode = String(Math.floor(100000 + Math.random() * 900000));
-      await insertOtpVerification({ identifier: `pwdreset:${user.id}`, otpCode: resetCode, expiresAt: new Date(Date.now() + 15 * 60 * 1000) });
+      await insertOtpVerification({ identifier: `pwdreset:${user.id}`, otpCode: resetCode, expiresAt: new Date(Date.now() + 15 * 60 * 1000), isUsed: 0 });
       const delivery = await sendSecurityEmail(user.email, "Dream Telco password reset", `Your password reset code is ${resetCode}. It expires in 15 minutes. If you didn't request this, ignore this email.`);
       await addAuditLog({ action: "Password Reset Requested", userId: user.id, reason: "Forgot-password flow" });
       return { accepted: true, sandboxMode: delivery.sandbox, resetCode: delivery.sandbox ? resetCode : "" };
@@ -361,7 +361,7 @@ export const appRouter = router({
     requestOtp: publicProcedure.input(z.object({ identifier: z.string().min(3).max(150) })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const otpCode = String(Math.floor(100000 + Math.random() * 900000));
-      await insertOtpVerification({ identifier: input.identifier.trim().toLowerCase(), otpCode, expiresAt: new Date(Date.now() + 10 * 60 * 1000) });
+      await insertOtpVerification({ identifier: input.identifier.trim().toLowerCase(), otpCode, expiresAt: new Date(Date.now() + 10 * 60 * 1000), isUsed: 0 });
       return { accepted: true, deliveryConfigured: false, message: "Verification record created. Configure an email/SMS provider before using this for production delivery." };
     }),
     requestDualOtp: protectedProcedure.mutation(async ({ ctx }) => {
@@ -369,7 +369,7 @@ export const appRouter = router({
       if (!ctx.user.email || !ctx.user.phoneNumber) throw new Error("Both an email address and phone number are required before requesting dual verification.");
       const emailOtp = String(Math.floor(100000 + Math.random() * 900000));
       const phoneOtp = String(Math.floor(100000 + Math.random() * 900000));
-      await insertAuthChallenge({ userId: ctx.user.id, emailOtp, phoneOtp, expiresAt: new Date(Date.now() + 10 * 60 * 1000) });
+      await insertAuthChallenge({ userId: ctx.user.id, emailOtp, phoneOtp, expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0 });
       return { accepted: true, deliveryConfigured: false, message: "Dual challenge created. Connect approved email and SMS delivery before using this in production." };
     }),
     verifyDualOtp: protectedProcedure.input(z.object({ emailOtp: z.string().length(6), phoneOtp: z.string().length(6) })).mutation(async ({ ctx, input }) => {
