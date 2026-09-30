@@ -1,0 +1,1 @@
+{"fieldOverrides":[],"indexes":[{"collectionGroup":"daily_performance","fields":[{"fieldPath":"projectId","order":"ASCENDING"},{"fieldPath":"businessDate","order":"DESCENDING"}],"queryScope":"COLLECTION"},{"collectionGroup":"daily_performance","fields":[{"fieldPath":"testerId","order":"ASCENDING"},{"fieldPath":"businessDate","order":"DESCENDING"}],"queryScope":"COLLECTION"}]}
