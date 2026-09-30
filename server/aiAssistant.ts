@@ -119,11 +119,41 @@ export type WorkspaceSnapshot = {
   testers: SnapshotTester[];
   leaders: SnapshotLeader[];
   projects: SnapshotProject[];
-  /** Performance rows for the day being asked about (already filtered by date). */
+  /** Performance rows for the asked-about period (already filtered by date). */
   performance: SnapshotRow[];
+  /** Human label for the period, e.g. "today", "yesterday", "the last 7 days". */
+  dateLabel: string;
 };
 
 const fmt = (n: number) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n || 0);
+
+/**
+ * Detect a date range in a question: "yesterday", "this week" / "last 7 days",
+ * "this month", or an explicit YYYY-MM-DD. Returns inclusive from/to dates plus
+ * a label for answers. Defaults to today when nothing is mentioned.
+ */
+export function parseQuestionDateRange(text: string, todayISO: string): { from: string; to: string; label: string } {
+  const q = norm(text);
+  const d = new Date(`${todayISO}T12:00:00`);
+  const iso = (x: Date) => x.toISOString().slice(0, 10)!;
+  if (/yesterday/.test(q)) {
+    const y = new Date(d);
+    y.setDate(y.getDate() - 1);
+    const s = iso(y);
+    return { from: s, to: s, label: "yesterday" };
+  }
+  if (/this\s*week|last\s*7|past\s*7|past\s*week/.test(q)) {
+    const f = new Date(d);
+    f.setDate(f.getDate() - 6);
+    return { from: iso(f), to: todayISO, label: "the last 7 days" };
+  }
+  if (/this\s*month/.test(q)) {
+    return { from: `${todayISO.slice(0, 7)}-01`, to: todayISO, label: "this month" };
+  }
+  const md = q.match(/(\d{4}-\d{2}-\d{2})/);
+  if (md) return { from: md[1]!, to: md[1]!, label: md[1]! };
+  return { from: todayISO, to: todayISO, label: "today" };
+}
 
 function findTester(snapshot: WorkspaceSnapshot, name: string) {
   const needle = norm(name);
@@ -158,7 +188,7 @@ export function answerWorkspaceQuestion(text: string, snapshot: WorkspaceSnapsho
       .filter((r) => memberIds.has(r.testerId) && (mentionedProjectId == null || r.projectId === mentionedProjectId))
       .reduce((sum, r) => sum + r.quantity, 0);
     const scope = mentionedProject ? ` on ${mentionedProject}` : "";
-    return `${leader.name}'s team did ${fmt(total)} OTPs${scope} today.`;
+    return `${leader.name}'s team did ${fmt(total)} OTPs${scope} ${snapshot.dateLabel}.`;
   }
 
   // "who hasn't reported" / "missing reporters" / "zero"
@@ -169,9 +199,9 @@ export function answerWorkspaceQuestion(text: string, snapshot: WorkspaceSnapsho
       .filter((r) => r.total > 0)
       .sort((a, b) => b.total - a.total)
       .slice(0, 5);
-    if (!ranked.length) return "No OTPs have been reported yet today.";
+    if (!ranked.length) return `No OTPs have been reported ${snapshot.dateLabel}.`;
     const scope = mentionedProject ? ` (${mentionedProject})` : "";
-    return `Top performers today${scope}: ` + ranked.map((r, i) => `${i + 1}. ${r.name} — ${fmt(r.total)}`).join(", ") + ".";
+    return `Top performers ${snapshot.dateLabel}${scope}: ` + ranked.map((r, i) => `${i + 1}. ${r.name} — ${fmt(r.total)}`).join(", ") + ".";
   }
 
   // "total work by Bisma" / "how much did Ali do"
@@ -182,13 +212,19 @@ export function answerWorkspaceQuestion(text: string, snapshot: WorkspaceSnapsho
     if (!tester) return null; // unknown name -> let the LLM/command layer handle it
     const total = totalForTester(snapshot, tester.id, mentionedProjectId);
     const scope = mentionedProject ? ` on ${mentionedProject}` : "";
-    return `${tester.name} did ${fmt(total)} OTPs${scope} today.`;
+    return `${tester.name} did ${fmt(total)} OTPs${scope} ${snapshot.dateLabel}.`;
+  }
+
+  // "how many testers" / headcount
+  if (/how\s+many\s+(testers?|people|members)/.test(low)) {
+    const active = snapshot.testers.filter((t) => t.status === "ACTIVE").length;
+    return `There ${active === 1 ? "is" : "are"} ${active} active tester${active === 1 ? "" : "s"} on the roster.`;
   }
 
   if (/not .*report|missing|haven't|hasn't|zero|didn.?t/.test(low)) {
     const reported = new Set(snapshot.performance.map((r) => r.testerId));
     const missing = snapshot.testers.filter((t) => t.status === "ACTIVE" && !reported.has(t.id));
-    if (!missing.length) return "Everyone on the roster has reported today. 🎉";
+    if (!missing.length) return `Everyone on the roster has reported ${snapshot.dateLabel}. 🎉`;
     return `Haven't reported today (${missing.length}): ` + missing.map((t) => t.name).join(", ") + ".";
   }
 
@@ -198,7 +234,7 @@ export function answerWorkspaceQuestion(text: string, snapshot: WorkspaceSnapsho
       const total = snapshot.performance.filter((r) => r.projectId === p.id).reduce((s, r) => s + r.quantity, 0);
       return `${p.name}: ${fmt(total)}`;
     });
-    return "Today — " + parts.join(" vs ") + ".";
+    return `${snapshot.dateLabel === "today" ? "Today" : `In ${snapshot.dateLabel}`} — ` + parts.join(" vs ") + ".";
   }
 
   // "total for Super X" / "how much on Section X"
@@ -206,7 +242,7 @@ export function answerWorkspaceQuestion(text: string, snapshot: WorkspaceSnapsho
     const total = snapshot.performance
       .filter((r) => r.projectId === mentionedProjectId)
       .reduce((sum, r) => sum + r.quantity, 0);
-    return `Total on ${mentionedProject} today: ${fmt(total)} OTPs.`;
+    return `Total on ${mentionedProject} ${snapshot.dateLabel}: ${fmt(total)} OTPs.`;
   }
 
   return null;

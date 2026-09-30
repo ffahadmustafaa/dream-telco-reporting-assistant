@@ -33,6 +33,7 @@ import {
   LogOut,
   Moon,
   PanelLeft,
+  CalendarClock,
   ReceiptText,
   Settings,
   Sun,
@@ -63,6 +64,7 @@ const menuItems = [
   },
   { icon: Users, label: "Admin dashboard", path: "/admin", adminOnly: true },
   { icon: Users, label: "User directory", path: "/users", adminOnly: true },
+  { icon: CalendarClock, label: "Automation", path: "/automation", adminOnly: true },
 ];
 const SIDEBAR_WIDTH_KEY = "dream-telco-sidebar-width";
 const DEFAULT_WIDTH = 252;

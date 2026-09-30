@@ -1,10 +1,12 @@
 import type { Request, Response } from "express";
 import {
+  getAppSettings,
   isDbConfigured,
   listActiveProjects,
   listPerformanceByDate,
   listTeamLeaders,
   listTesters,
+  updateAppSettings,
 } from "./db";
 import { authenticateRequest } from "./_core/session";
 import { buildReportWorkbook, deliverDailyReport, type ReportRow } from "./reportDelivery";
@@ -59,7 +61,20 @@ export async function scheduledDailyReport(req: Request, res: Response) {
       context.taskUid = `manual:${user.id}`;
     }
     const report = await compileDailyReport();
+    // Honor the admin-configured report time: the deployment cron fires daily, but if the
+    // configured time is far from "now" in the configured timezone, skip the send so a
+    // mistimed manual hit doesn't blast a duplicate report. "Run now" in the app bypasses this.
+    const settings = await getAppSettings();
+    const nowParts = new Intl.DateTimeFormat("en-GB", { timeZone: settings.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date());
+    const [nowH, nowM] = nowParts.split(":").map(Number);
+    const [cfgH, cfgM] = settings.reportTime.split(":").map(Number);
+    const driftMinutes = Math.abs((nowH! * 60 + nowM!) - (cfgH! * 60 + cfgM!));
+    const fromCron = context.taskUid === "vercel-cron";
+    if (fromCron && driftMinutes > 90) {
+      return res.json({ ok: true, skipped: true, reason: `Configured report time is ${settings.reportTime} (${settings.timezone}); current time is ${nowParts}.`, date: report.date });
+    }
     const delivery = await deliverDailyReport(report.date, report.workbook, report.summary);
+    await updateAppSettings({ lastAutoReport: new Date().toISOString() });
     return res.json({ ok: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery });
   } catch (error) {
     return res.status(500).json({ error: String(error), stack: error instanceof Error ? error.stack : undefined, context, timestamp: new Date().toISOString() });

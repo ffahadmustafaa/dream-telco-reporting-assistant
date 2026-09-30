@@ -1,10 +1,58 @@
 import * as XLSX from "xlsx-js-style";
 import { notifyOwner } from "./_core/notification";
+import { getAppSettings } from "./db";
 
 export type ReportRow = { leader: string; tester: string; values: Record<string, number>; total: number };
 
-const reportEmail = process.env.REPORT_EMAIL_TO ?? "ffahadmustafaa@gmail.com";
-const reportFrom = process.env.REPORT_EMAIL_FROM ?? "Dream Telco Reports <reports@example.com>";
+export type SmtpDeliveryConfig = {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+  from: string;
+};
+
+const envReportEmail = process.env.REPORT_EMAIL_TO ?? "ffahadmustafaa@gmail.com";
+const envReportFrom = process.env.REPORT_EMAIL_FROM ?? "Dream Telco Reports <reports@example.com>";
+
+/** Delivery settings resolved from the in-app automation settings (admin-configured). */
+export async function resolveReportDelivery(): Promise<{ to: string; smtp: SmtpDeliveryConfig | null }> {
+  try {
+    const settings = await getAppSettings();
+    const smtp =
+      settings.smtpHost && settings.smtpUser && settings.smtpPass
+        ? {
+            host: settings.smtpHost,
+            port: settings.smtpPort || 587,
+            secure: settings.smtpSecure === 1,
+            user: settings.smtpUser,
+            pass: settings.smtpPass,
+            from: settings.smtpFrom || settings.smtpUser,
+          }
+        : null;
+    return { to: settings.adminEmail || envReportEmail, smtp };
+  } catch {
+    return { to: envReportEmail, smtp: null };
+  }
+}
+
+async function sendViaSmtp(smtp: SmtpDeliveryConfig, to: string, subject: string, text: string, attachment?: { filename: string; content: Buffer }) {
+  const { default: nodemailer } = await import("nodemailer");
+  const transporter = nodemailer.createTransport({
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    auth: { user: smtp.user, pass: smtp.pass },
+  });
+  await transporter.sendMail({
+    from: smtp.from,
+    to,
+    subject,
+    text,
+    attachments: attachment ? [{ filename: attachment.filename, content: attachment.content }] : [],
+  });
+}
 
 export function buildReportWorkbook(date: string, projects: string[], rows: ReportRow[]) {
   const matrix: Array<Array<string | number>> = [["Project", ...projects, "Total"]];
@@ -30,19 +78,43 @@ export function buildReportWorkbook(date: string, projects: string[], rows: Repo
 }
 
 export async function deliverDailyReport(date: string, workbook: Buffer, summary: string) {
+  const delivery = await resolveReportDelivery();
+  const subject = `Daily Operations & OTP Report - ${date}`;
+  const filename = `Daily_Operations_Report_${date}.xlsx`;
+
+  // 1) In-app SMTP settings (configured by the admin under Automation).
+  if (delivery.smtp) {
+    await sendViaSmtp(delivery.smtp, delivery.to, subject, summary, { filename, content: workbook });
+    return { channel: "smtp" as const, recipient: delivery.to };
+  }
+
+  // 2) Resend via environment (legacy).
   const provider = process.env.REPORT_EMAIL_PROVIDER?.toLowerCase();
   const apiKey = process.env.REPORT_EMAIL_API_KEY;
   if (provider === "resend" && apiKey) {
-    const response = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: reportFrom, to: [reportEmail], subject: `Daily Operations & OTP Report - ${date}`, text: summary, attachments: [{ filename: `Daily_Operations_Report_${date}.xlsx`, content: workbook.toString("base64") }] }) });
+    const response = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: envReportFrom, to: [delivery.to], subject, text: summary, attachments: [{ filename, content: workbook.toString("base64") }] }) });
     if (!response.ok) throw new Error(`Report email provider failed (${response.status})`);
-    return { channel: "email" as const, recipient: reportEmail };
+    return { channel: "email" as const, recipient: delivery.to };
   }
-  const notified = await notifyOwner({ title: `Daily Operations & OTP Report - ${date}`, content: `${summary}\n\nEmail attachment delivery is not configured. Set REPORT_EMAIL_PROVIDER=resend, REPORT_EMAIL_API_KEY, and REPORT_EMAIL_FROM to enable direct email attachments.` });
-  return { channel: notified ? "owner_notification" as const : "unconfigured" as const, recipient: reportEmail };
+  const notified = await notifyOwner({ title: subject, content: `${summary}\n\nEmail attachment delivery is not configured. Open the app as admin → Automation and add SMTP settings to enable direct email attachments.` });
+  return { channel: notified ? "owner_notification" as const : "unconfigured" as const, recipient: delivery.to };
 }
 
 export function reportDeliveryConfig() {
-  return { provider: process.env.REPORT_EMAIL_PROVIDER ?? "owner notification fallback", recipient: reportEmail, emailConfigured: Boolean(process.env.REPORT_EMAIL_API_KEY && process.env.REPORT_EMAIL_PROVIDER) };
+  return { provider: process.env.REPORT_EMAIL_PROVIDER ?? "owner notification fallback", recipient: envReportEmail, emailConfigured: Boolean(process.env.REPORT_EMAIL_API_KEY && process.env.REPORT_EMAIL_PROVIDER) };
+}
+
+/** Delivery status for the Automation page (never exposes the SMTP password). */
+export async function reportAutomationStatus() {
+  const settings = await getAppSettings();
+  const delivery = await resolveReportDelivery();
+  return {
+    recipient: delivery.to,
+    smtpConfigured: Boolean(delivery.smtp),
+    smtpHost: settings.smtpHost,
+    resendConfigured: Boolean(process.env.REPORT_EMAIL_PROVIDER && process.env.REPORT_EMAIL_API_KEY),
+    lastAutoReport: settings.lastAutoReport,
+  };
 }
 
 /** Send a plain-text email through the configured Resend provider. Throws when unconfigured. */
@@ -53,7 +125,7 @@ export async function sendSimpleEmail(to: string, subject: string, text: string)
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from: reportFrom, to: [to], subject, text }),
+    body: JSON.stringify({ from: envReportFrom, to: [to], subject, text }),
   });
   if (!response.ok) throw new Error(`Email provider failed (${response.status})`);
 }

@@ -19,6 +19,7 @@ import {
   deleteUser,
   ensureWorkspaceInitialized,
   findPerformance,
+  getAppSettings,
   getImport,
   getPayout,
   getTeamLeader,
@@ -47,6 +48,7 @@ import {
   listPayoutRules,
   listPayouts,
   listPerformanceByDate,
+  listPerformanceByDateRange,
   listPerformanceByProject,
   listPerformanceByTester,
   listProjects,
@@ -59,6 +61,7 @@ import {
   updatePayout,
   updatePayoutRule,
   updatePerformance,
+  updateAppSettings,
   updateProject,
   updateTeamLeader,
   updateTester,
@@ -71,12 +74,16 @@ import {
   type Project,
   type TeamLeader,
   type Tester,
+  type Target,
+  getTarget,
+  updateTarget,
+  deleteTarget,
 } from "./db";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { isSandboxAuth, sendDualOtp, sendSecurityEmail } from "./_core/authDelivery";
 import { compileDailyReport } from "./scheduledReports";
-import { deliverDailyReport, reportDeliveryConfig } from "./reportDelivery";
-import { answerWorkspaceQuestion, parseAssistantCommand, type AssistantCommand, type WorkspaceSnapshot } from "./aiAssistant";
+import { deliverDailyReport, reportAutomationStatus, reportDeliveryConfig } from "./reportDelivery";
+import { answerWorkspaceQuestion, parseAssistantCommand, parseQuestionDateRange, type AssistantCommand, type WorkspaceSnapshot } from "./aiAssistant";
 import { answerDatasetQuestion, parseWorkbook, summarizeDataset } from "./aiDataset";
 
 const dateInput = z.string().optional();
@@ -98,14 +105,17 @@ type CommandUser = { id: number; name: string | null; accountRole: "admin" | "te
 type CommandData = { roster: RosterTester[]; leaderRows: RosterLeader[]; projectRows: ProjectRecord[]; reportDate: string; latest: string };
 
 /** Role-scoped snapshot for deterministic assistant Q&A. */
-async function buildWorkspaceSnapshot(scopeTesters: RosterTester[], scopeLeaders: RosterLeader[], projectRows: ProjectRecord[], reportDate: string): Promise<WorkspaceSnapshot> {
-  const perf = await listPerformanceByDate(toDate(reportDate));
+async function buildWorkspaceSnapshot(scopeTesters: RosterTester[], scopeLeaders: RosterLeader[], projectRows: ProjectRecord[], fromDate: string, toDateStr: string, dateLabel: string): Promise<WorkspaceSnapshot> {
+  const endExclusive = new Date(`${toDateStr}T00:00:00.000Z`);
+  endExclusive.setDate(endExclusive.getDate() + 1);
+  const perf = await listPerformanceByDateRange(toDate(fromDate), endExclusive);
   const testerIds = new Set(scopeTesters.map(item => item.id));
   return {
     testers: scopeTesters.map(item => ({ id: item.id, name: item.name, teamLeaderId: item.teamLeaderId, status: item.status })),
     leaders: scopeLeaders.map(item => ({ id: item.id, name: item.name, status: item.status })),
     projects: projectRows.map(item => ({ id: item.id, name: item.name })),
     performance: perf.filter(item => testerIds.has(item.testerId)).map(item => ({ testerId: item.testerId, projectId: item.projectId, quantity: money(item.quantity) })),
+    dateLabel,
   };
 }
 
@@ -249,17 +259,22 @@ export const appRouter = router({
       const leader = ctx.user.teamLeaderId ? await getTeamLeader(ctx.user.teamLeaderId) : undefined;
       return { user: stripSecrets(ctx.user), teamLeader: leader ? { id: leader.id, name: leader.name, status: leader.status } : null };
     }),
-    updateProfile: protectedProcedure.input(z.object({ name: z.string().min(2).max(100), email: z.string().email().max(320), phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international phone format"), currentPassword: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    updateProfile: protectedProcedure.input(z.object({ name: z.string().min(2).max(100), email: z.string().email().max(320), phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international phone format"), currentPassword: z.string().min(1), newPassword: z.string().min(8).max(128).optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (!ctx.user.passwordHash || !verifyPassword(input.currentPassword, ctx.user.passwordHash)) throw new Error("Current password is incorrect");
       const email = input.email.trim().toLowerCase(); const phone = input.phoneNumber.trim();
       const others = (await listUsers()).filter(user => user.id !== ctx.user.id);
       if (others.some(user => user.email?.toLowerCase() === email)) throw new Error("That email is already registered");
       if (others.some(user => user.phoneNumber === phone)) throw new Error("That phone number is already registered");
-      await updateUser(ctx.user.id, { name: input.name.trim(), email, phoneNumber: phone });
+      const patch: Record<string, unknown> = { name: input.name.trim(), email, phoneNumber: phone };
+      if (input.newPassword) {
+        if (verifyPassword(input.newPassword, ctx.user.passwordHash)) throw new Error("New password must be different from the current password");
+        patch.passwordHash = hashPassword(input.newPassword);
+      }
+      await updateUser(ctx.user.id, patch as Parameters<typeof updateUser>[1]);
       await setLocalSession(ctx, { openId: ctx.user.openId, name: input.name.trim() }, true);
-      await addAuditLog({ action: "Profile Updated", userId: ctx.user.id, newValue: { name: input.name.trim(), email, phoneNumber: phone }, reason: "Password-confirmed self-service update" });
-      return { success: true, user: { name: input.name.trim(), email, phoneNumber: phone } };
+      await addAuditLog({ action: input.newPassword ? "Profile & Password Updated" : "Profile Updated", userId: ctx.user.id, newValue: { name: input.name.trim(), email, phoneNumber: phone, passwordChanged: Boolean(input.newPassword) }, reason: "Password-confirmed self-service update" });
+      return { success: true, passwordChanged: Boolean(input.newPassword), user: { name: input.name.trim(), email, phoneNumber: phone } };
     }),
     logout: publicProcedure.mutation(async ({ ctx }) => {
       if (ctx.user) {
@@ -533,6 +548,36 @@ export const appRouter = router({
       await addAuditLog({ action: "Tester Deleted", userId: ctx.user.id, oldValue: old, reason: "User requested roster cleanup" });
       return { success: true };
     }),
+    addOwnTester: protectedProcedure.input(z.object({ name: z.string().min(2), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.accountRole !== "team_leader") throw new Error("Only Team Leaders can use this action");
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const own = (await listTeamLeaders()).find(leader => cleanName(leader.name) === cleanName(ctx.user.name ?? ""));
+      if (!own) throw new Error("No team is linked to your account");
+      const name = input.name.trim();
+      const existing = (await listTesters()).find(item => cleanName(item.name) === cleanName(name));
+      if (existing) {
+        if (existing.teamLeaderId !== own.id) throw new Error("A tester with this name already exists on another team");
+        await updateTester(existing.id, { status: "ACTIVE", notes: input.notes ?? existing.notes });
+        await addAuditLog({ action: "Tester Rejoined (Leader)", userId: ctx.user.id, oldValue: existing, newValue: input });
+        return { id: existing.id };
+      }
+      const id = await insertTester({ name, teamLeaderId: own.id, notes: input.notes ?? null });
+      await addAuditLog({ action: "Tester Added (Leader)", userId: ctx.user.id, newValue: { ...input, teamLeaderId: own.id } });
+      return { id };
+    }),
+    updateOwnTester: protectedProcedure.input(z.object({ testerId: z.number(), name: z.string().min(2).optional(), status: z.enum(["ACTIVE", "INACTIVE"]).optional() })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.accountRole !== "team_leader") throw new Error("Only Team Leaders can use this action");
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const own = (await listTeamLeaders()).find(leader => cleanName(leader.name) === cleanName(ctx.user.name ?? ""));
+      const target = await getTester(input.testerId);
+      if (!own || !target || target.teamLeaderId !== own.id) throw new Error("You can only manage testers on your own team");
+      const patch: Record<string, unknown> = {};
+      if (input.name) patch.name = input.name.trim();
+      if (input.status) { patch.status = input.status; patch.dateInactive = input.status === "INACTIVE" ? new Date() : null; }
+      await updateTester(input.testerId, patch as Partial<Tester>);
+      await addAuditLog({ action: "Tester Updated (Leader)", userId: ctx.user.id, oldValue: { id: target.id, name: target.name, status: target.status }, newValue: input });
+      return { success: true };
+    }),
     deleteLeader: adminProcedure.input(z.object({ teamLeaderId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const old = await getTeamLeader(input.teamLeaderId);
@@ -685,8 +730,84 @@ export const appRouter = router({
       await addAuditLog({ action: "Target Changed", userId: ctx.user.id, newValue: input });
       return { id };
     }),
+    update: protectedProcedure.input(z.object({ targetId: z.number().int().positive(), target: z.number().nonnegative(), effectiveDate: z.string(), endDate: z.string().optional() })).mutation(async ({ ctx, input }) => {
+      const isAdmin = ctx.user.accountRole === "admin" || ctx.user.role === "admin";
+      if (!isAdmin) throw new Error("Only admins can edit targets");
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const existing = await getTarget(input.targetId);
+      if (!existing) throw new Error("Target not found");
+      const patch: Record<string, unknown> = { target: input.target, effectiveDate: toDate(input.effectiveDate) };
+      if (input.endDate !== undefined) patch.endDate = input.endDate ? toDate(input.endDate) : null;
+      await updateTarget(input.targetId, patch as Partial<Target>);
+      await addAuditLog({ action: "Target Updated", userId: ctx.user.id, oldValue: { target: existing.target, effectiveDate: existing.effectiveDate, endDate: existing.endDate }, newValue: input, reason: "Admin target correction" });
+      return { success: true };
+    }),
+    remove: protectedProcedure.input(z.object({ targetId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const isAdmin = ctx.user.accountRole === "admin" || ctx.user.role === "admin";
+      if (!isAdmin) throw new Error("Only admins can delete targets");
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const existing = await getTarget(input.targetId);
+      if (!existing) throw new Error("Target not found");
+      await deleteTarget(input.targetId);
+      await addAuditLog({ action: "Target Deleted", userId: ctx.user.id, oldValue: { id: existing.id, level: existing.level, target: existing.target }, reason: "Admin target removal" });
+      return { success: true };
+    }),
   }),
   audit: router({ list: protectedProcedure.query(({ ctx }) => { if (ctx.user.accountRole !== "admin" && ctx.user.role !== "admin") throw new Error("Only Admins can view the audit log."); return listAuditLogs(); }) }),
+  settings: router({
+    get: adminProcedure.query(async () => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const settings = await getAppSettings();
+      const { smtpPass: _smtpPass, ...safe } = settings;
+      return { ...safe, smtpConfigured: Boolean(settings.smtpHost && settings.smtpUser && settings.smtpPass) };
+    }),
+    update: adminProcedure.input(z.object({
+      reportTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM, e.g. 22:30").optional(),
+      timezone: z.string().min(1).max(60).optional(),
+      adminEmail: z.string().email().max(320).nullable().optional(),
+      smtpHost: z.string().max(200).nullable().optional(),
+      smtpPort: z.number().int().min(1).max(65535).optional(),
+      smtpSecure: z.boolean().optional(),
+      smtpUser: z.string().max(200).nullable().optional(),
+      smtpPass: z.string().max(500).optional(),
+      smtpFrom: z.string().max(320).nullable().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const patch: Record<string, unknown> = {};
+      if (input.reportTime !== undefined) patch.reportTime = input.reportTime;
+      if (input.timezone !== undefined) patch.timezone = input.timezone;
+      if (input.adminEmail !== undefined) patch.adminEmail = input.adminEmail;
+      if (input.smtpHost !== undefined) patch.smtpHost = input.smtpHost || null;
+      if (input.smtpPort !== undefined) patch.smtpPort = input.smtpPort;
+      if (input.smtpSecure !== undefined) patch.smtpSecure = input.smtpSecure ? 1 : 0;
+      if (input.smtpUser !== undefined) patch.smtpUser = input.smtpUser || null;
+      if (input.smtpPass) patch.smtpPass = input.smtpPass; // empty => keep existing
+      if (input.smtpFrom !== undefined) patch.smtpFrom = input.smtpFrom || null;
+      const updated = await updateAppSettings(patch as Parameters<typeof updateAppSettings>[0]);
+      await addAuditLog({ action: "Automation Settings Updated", userId: ctx.user.id, newValue: { ...patch, smtpPass: patch.smtpPass ? "***" : undefined } });
+      const { smtpPass: _smtpPass, ...safe } = updated;
+      return { ...safe, smtpConfigured: Boolean(updated.smtpHost && updated.smtpUser && updated.smtpPass) };
+    }),
+    deliveryStatus: adminProcedure.query(async () => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      return reportAutomationStatus();
+    }),
+    runReportNow: adminProcedure.input(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).mutation(async ({ ctx, input }) => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const report = await compileDailyReport(input.date);
+      const delivery = await deliverDailyReport(report.date, report.workbook, report.summary);
+      await updateAppSettings({ lastAutoReport: new Date().toISOString() });
+      await addAuditLog({ action: "Manual Report Run", userId: ctx.user.id, newValue: { date: report.date, grandTotal: report.grandTotal, delivery } });
+      return {
+        date: report.date,
+        rows: report.rows.length,
+        grandTotal: report.grandTotal,
+        delivery,
+        fileName: `Daily_Operations_Report_${report.date}.xlsx`,
+        workbookBase64: report.workbook.toString("base64"),
+      };
+    }),
+  }),
   assistant: router({
     chat: protectedProcedure.input(z.object({ messages: z.array(z.object({ role: z.enum(["user", "assistant", "system"]), content: z.string() })).min(1), businessDate: z.string().optional() })).mutation(async ({ ctx, input }) => {
       const latest = input.messages[input.messages.length - 1]?.content ?? "";
@@ -710,7 +831,9 @@ export const appRouter = router({
       }
 
       // Layer 2: deterministic workspace questions over role-scoped rows.
-      const directAnswer = answerWorkspaceQuestion(latest, await buildWorkspaceSnapshot(scopeTesters, scopeLeaders, projectRows, reportDate));
+      // Date-aware: "yesterday", "this week", "this month", or an explicit date widen the snapshot.
+      const range = parseQuestionDateRange(latest, reportDate);
+      const directAnswer = answerWorkspaceQuestion(latest, await buildWorkspaceSnapshot(scopeTesters, scopeLeaders, projectRows, range.from, range.to, range.label));
       if (directAnswer) return { content: directAnswer, ingestion: null };
 
       // Layer 3: LLM fallback for multi-row reports, payout rules, and free-form chat.

@@ -222,6 +222,7 @@ const COLLECTIONS = {
   payoutRules: "payout_rules",
   imports: "imports",
   auditLogs: "audit_logs",
+  appSettings: "app_settings",
 } as const;
 
 type CollectionKey = keyof typeof COLLECTIONS;
@@ -591,6 +592,21 @@ export async function deleteTargetsByTester(testerId: number): Promise<void> {
   return deleteWhere<Target>("targets", (t) => t.testerId === testerId);
 }
 
+/** Get a single target by id. */
+export async function getTarget(id: number): Promise<Target | undefined> {
+  return getById<Target>("targets", id);
+}
+
+/** Update a target record. */
+export async function updateTarget(id: number, patch: Partial<Target>): Promise<void> {
+  return updateOne("targets", id, patch as Record<string, unknown>);
+}
+
+/** Delete a target record. */
+export async function deleteTarget(id: number): Promise<void> {
+  return deleteOne("targets", id);
+}
+
 export async function deleteTargetsByLeader(leaderId: number): Promise<void> {
   return deleteWhere<Target>("targets", (t) => t.teamLeaderId === leaderId);
 }
@@ -842,4 +858,84 @@ export async function getWorkspaceData(date: Date): Promise<WorkspaceData> {
     listImports(),
   ]);
   return { leaders, testers, projects, performance, targets, payouts, imports };
+}
+
+// ---------------------------------------------------------------------------
+// App settings (automation: report schedule + email delivery)
+// ---------------------------------------------------------------------------
+
+export interface AppSettings {
+  id: number;
+  /** "HH:MM" in the configured timezone, e.g. "22:30". */
+  reportTime: string;
+  /** IANA timezone, e.g. "Asia/Karachi". */
+  timezone: string;
+  /** Recipient override for the daily report email. */
+  adminEmail: string | null;
+  smtpHost: string | null;
+  smtpPort: number;
+  /** Stored as 0/1 in Firestore. */
+  smtpSecure: number;
+  smtpUser: string | null;
+  /** Stored server-side only; never returned to clients. */
+  smtpPass: string | null;
+  smtpFrom: string | null;
+  /** ISO timestamp of the last scheduled auto-report send. */
+  lastAutoReport: string | null;
+  updatedAt: Date;
+}
+
+const DEFAULT_APP_SETTINGS = {
+  reportTime: "22:30",
+  timezone: "Asia/Karachi",
+  adminEmail: "ffahadmustafaa@gmail.com",
+  smtpHost: null as string | null,
+  smtpPort: 587,
+  smtpSecure: 0,
+  smtpUser: null as string | null,
+  smtpPass: null as string | null,
+  smtpFrom: null as string | null,
+  lastAutoReport: null as string | null,
+};
+
+/** Singleton settings document (id "1"), created lazily with defaults. */
+export async function getAppSettings(): Promise<AppSettings> {
+  const db = getFirestoreDb();
+  if (!db) return { id: 1, ...DEFAULT_APP_SETTINGS, updatedAt: new Date() };
+  const ref = db.collection(COLLECTIONS.appSettings).doc("1");
+  const snap = await ref.get();
+  if (!snap.exists) {
+    const record = { id: 1, ...DEFAULT_APP_SETTINGS, updatedAt: new Date() };
+    await ref.set(toFirestoreData(record) as Record<string, unknown>);
+    return record;
+  }
+  const row = fromDoc<AppSettings>(snap as never);
+  return { ...DEFAULT_APP_SETTINGS, ...row, id: 1, updatedAt: row.updatedAt ?? new Date() };
+}
+
+export async function updateAppSettings(patch: Partial<Omit<AppSettings, "id">>): Promise<AppSettings> {
+  const db = getFirestoreDb();
+  if (!db) throw new Error("Database is unavailable");
+  const ref = db.collection(COLLECTIONS.appSettings).doc("1");
+  const clean: Record<string, unknown> = { ...patch, id: 1, updatedAt: new Date() };
+  delete clean.smtpPass; // password is handled explicitly below
+  if (patch.smtpPass !== undefined) clean.smtpPass = patch.smtpPass;
+  await ref.set(toFirestoreData(clean) as Record<string, unknown>, { merge: true });
+  return getAppSettings();
+}
+
+/** Performance rows within [from, to) — used for assistant date-range questions. */
+export async function listPerformanceByDateRange(from: Date, to: Date): Promise<DailyPerformance[]> {
+  const db = getFirestoreDb();
+  if (!db) return [];
+  const start = new Date(from);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(to);
+  end.setHours(0, 0, 0, 0);
+  const snap = await db
+    .collection(COLLECTIONS.dailyPerformance)
+    .where("businessDate", ">=", Timestamp.fromDate(start))
+    .where("businessDate", "<", Timestamp.fromDate(end))
+    .get();
+  return snap.docs.map((d) => fromDoc<DailyPerformance>(d as never));
 }
