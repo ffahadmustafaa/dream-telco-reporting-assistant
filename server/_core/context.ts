@@ -1,7 +1,7 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import type { User } from "../db";
 import { authenticateRequest } from "./session";
-import { insertUserSession, listUserSessions, updateUserSessionByUserId } from "../db";
+import { getUserSessionByUserId, insertUserSession, updateUserSessionByUserId } from "../db";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
@@ -20,7 +20,9 @@ export async function createContext(
       user = sessionUser;
       const currentUser = sessionUser;
       const now = new Date();
-      const existing = (await listUserSessions()).find((session) => session.userId === currentUser.id);
+      // One targeted read; only write when the heartbeat is stale (>5 min)
+      // so ordinary page loads don't pay for a Firestore write every time.
+      const existing = await getUserSessionByUserId(currentUser.id).catch(() => undefined);
       const values = {
         identifier: currentUser.email ?? null,
         role: currentUser.accountRole ?? currentUser.role,
@@ -28,9 +30,12 @@ export async function createContext(
         isActive: 1,
       };
       if (existing) {
-        await updateUserSessionByUserId(currentUser.id, values);
+        const lastSeen = existing.lastSeenAt ? new Date(existing.lastSeenAt).getTime() : 0;
+        if (now.getTime() - lastSeen > 5 * 60 * 1000) {
+          await updateUserSessionByUserId(currentUser.id, values).catch(() => undefined);
+        }
       } else {
-        await insertUserSession({ userId: currentUser.id, ...values, loginAt: now });
+        await insertUserSession({ userId: currentUser.id, ...values, loginAt: now }).catch(() => undefined);
       }
     }
   } catch (error) {

@@ -396,6 +396,15 @@ export async function listUserSessions(): Promise<UserSession[]> {
   return listAll<UserSession>("userSessions");
 }
 
+/** Find the session row for one user without scanning the whole collection. */
+export async function getUserSessionByUserId(userId: number): Promise<UserSession | undefined> {
+  const db = getFirestoreDb();
+  if (!db) throw new Error("Database is unavailable");
+  const snap = await db.collection(COLLECTIONS.userSessions).where("userId", "==", userId).limit(1).get();
+  if (snap.empty) return undefined;
+  return fromDoc<UserSession>(snap.docs[0] as never);
+}
+
 export async function insertUserSession(values: InsertUserSession): Promise<number> {
   return insertOne<UserSession>("userSessions", values as Record<string, unknown>);
 }

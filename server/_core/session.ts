@@ -10,7 +10,7 @@
 import { SignJWT, jwtVerify } from "jose";
 import { parse as parseCookieHeader } from "cookie";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
-import { getUserByOpenId, upsertUser, type User } from "../db";
+import { getUserByOpenId, type User } from "../db";
 import { ENV } from "./env";
 
 export class HttpError extends Error {
@@ -92,6 +92,5 @@ export async function authenticateRequest(req: {
   if (!session) throw new UnauthorizedError("Invalid or expired session");
   const user = await getUserByOpenId(session.openId);
   if (!user) throw new ForbiddenError("User not found");
-  await upsertUser({ openId: session.openId, lastSignedIn: new Date() });
   return user;
 }
