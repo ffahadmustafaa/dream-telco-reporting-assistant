@@ -172,24 +172,19 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
-          // Heavy on-demand libs keep their own chunk and never ship in
-          // the initial bundle. pnpm nests them under .pnpm/<pkg>@<ver>/,
-          // so match the package name on the trailing node_modules segment
-          // (scoped packages included, e.g. @shikijs/langs).
+          // Heavy libs that are only ever dynamically imported (streamdown
+          // via React.lazy, xlsx via loadXlsx helper): leave them to Vite's
+          // default code-splitting so they become their own async chunks
+          // and never join the initial vendor payload.
           const tail = id.slice(id.lastIndexOf("node_modules/"));
-          const match = tail.match(/^node_modules\/((?:@[^/]+\/)?[^/]+)/);
-          const pkg = match ? match[1] : "";
-          const inStreamdownTree =
-            pkg === "streamdown" ||
-            pkg === "katex" ||
-            pkg === "rehype-katex" ||
-            pkg === "remark-math" ||
-            pkg === "shiki" ||
-            pkg.startsWith("@shikijs/") ||
-            pkg === "mermaid" ||
-            pkg.startsWith("@mermaid-js/");
-          if (inStreamdownTree) return "lazy-streamdown";
-          if (pkg === "xlsx") return "lazy-xlsx";
+          if (
+            /node_modules\/(streamdown|katex|rehype-katex|remark-math|shiki|mermaid)([/\\]|$)/.test(tail) ||
+            /node_modules\/@shikijs\//.test(tail) ||
+            /node_modules\/@mermaid-js\//.test(tail) ||
+            /node_modules\/xlsx([/\\]|$)/.test(tail)
+          ) {
+            return undefined;
+          }
           return "vendor";
         },
       },
