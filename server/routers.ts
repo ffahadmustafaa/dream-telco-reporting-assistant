@@ -332,6 +332,9 @@ export const appRouter = router({
         const existingLeader = (await listTeamLeaders()).find(leader => cleanName(leader.name) === cleanName(user.name ?? ""));
         if (!existingLeader && user.name) await insertTeamLeader({ name: user.name, status: "ACTIVE" });
       }
+      if (user.accountRole === "tester" && user.name && user.teamLeaderId) {
+        await upsertTesterByName(user.name, user.teamLeaderId);
+      }
       await setLocalSession(ctx, { openId: user.openId, name: user.name }, input.remember);
       return { success: true, redirect: isRootAdmin ? "/" : "/daily", role: isRootAdmin ? "admin" : user.accountRole };
     }),
@@ -346,6 +349,9 @@ export const appRouter = router({
       if (user.accountRole === "team_leader") {
         const existingLeader = (await listTeamLeaders()).find(leader => cleanName(leader.name) === cleanName(user.name ?? ""));
         if (!existingLeader && user.name) await insertTeamLeader({ name: user.name, status: "ACTIVE" });
+      }
+      if (user.accountRole === "tester" && user.name && user.teamLeaderId) {
+        await upsertTesterByName(user.name, user.teamLeaderId);
       }
       await setLocalSession(ctx, { openId: user.openId, name: user.name }, input.remember);
       return { success: true, redirect: user.role === "admin" ? "/" : "/daily", role: user.accountRole };
