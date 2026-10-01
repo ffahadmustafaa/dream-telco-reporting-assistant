@@ -513,7 +513,7 @@ export const appRouter = router({
     }),
     addLeader: adminProcedure.input(z.object({ name: z.string().min(2), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
-      const id = await insertTeamLeader({ name: input.name.trim(), notes: input.notes ?? null });
+      const id = await insertTeamLeader({ name: input.name.trim(), status: "ACTIVE", notes: input.notes ?? null });
       await addAuditLog({ action: "Team Leader Added", userId: ctx.user.id, newValue: input });
       return { id };
     }),
@@ -526,7 +526,7 @@ export const appRouter = router({
         await addAuditLog({ action: "Tester Reassigned", userId: ctx.user.id, oldValue: existing, newValue: input });
         return { id: existing.id };
       }
-      const id = await insertTester({ name, teamLeaderId: input.teamLeaderId, notes: input.notes ?? null });
+      const id = await insertTester({ name, teamLeaderId: input.teamLeaderId, status: "ACTIVE", notes: input.notes ?? null });
       await addAuditLog({ action: "Tester Added", userId: ctx.user.id, newValue: input });
       return { id };
     }),
@@ -567,7 +567,7 @@ export const appRouter = router({
         await addAuditLog({ action: "Tester Rejoined (Leader)", userId: ctx.user.id, oldValue: existing, newValue: input });
         return { id: existing.id };
       }
-      const id = await insertTester({ name, teamLeaderId: own.id, notes: input.notes ?? null });
+      const id = await insertTester({ name, teamLeaderId: own.id, status: "ACTIVE", notes: input.notes ?? null });
       await addAuditLog({ action: "Tester Added (Leader)", userId: ctx.user.id, newValue: { ...input, teamLeaderId: own.id } });
       return { id };
     }),
