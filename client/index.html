@@ -9,7 +9,26 @@
     <title>Dream Telco Reporting Assistant</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-splash" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f7f9fc;font-family:system-ui,-apple-system,sans-serif">
+        <img src="/dream-telco-logo.png" alt="Dream Telco" style="width:72px;height:72px;object-fit:contain;margin-bottom:20px" />
+        <div style="width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:#f97316;border-radius:50%;animation:bootspin 0.8s linear infinite"></div>
+        <p style="margin-top:16px;color:#64748b;font-size:14px">Loading Dream Telco…</p>
+      </div>
+      <style>@keyframes bootspin{to{transform:rotate(360deg)}}</style>
+    </div>
+    <script>
+      // Remove the splash as soon as React mounts content
+      new MutationObserver(function(mutations, obs) {
+        var root = document.getElementById('root');
+        var splash = document.getElementById('boot-splash');
+        if (splash && root && (root.children.length > 1 || (root.firstElementChild && root.firstElementChild.id !== 'boot-splash'))) {
+          splash.remove(); obs.disconnect();
+        }
+      }).observe(document.getElementById('root'), { childList: true });
+      // Fallback: remove after 15s no matter what
+      setTimeout(function() { var s = document.getElementById('boot-splash'); if (s) s.remove(); }, 15000);
+    </script>
     <script type="module" src="/src/main.tsx"></script>
     <script defer src="%VITE_ANALYTICS_ENDPOINT%/umami" data-website-id="%VITE_ANALYTICS_WEBSITE_ID%"></script>
   </body>
