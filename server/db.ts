@@ -356,6 +356,33 @@ export async function getUserByOpenId(openId: string): Promise<User | undefined>
   return fromDoc<User>(snap.docs[0] as never);
 }
 
+/** Targeted lookup by email (1 read) instead of scanning all users. */
+export async function getUserByEmail(email: string): Promise<User | undefined> {
+  const db = getFirestoreDb();
+  if (!db) return undefined;
+  const snap = await db.collection(COLLECTIONS.users).where("email", "==", email.trim().toLowerCase()).limit(1).get();
+  if (snap.empty) return undefined;
+  return fromDoc<User>(snap.docs[0] as never);
+}
+
+/** Targeted lookup by phone number (1 read) instead of scanning all users. */
+export async function getUserByPhone(phoneNumber: string): Promise<User | undefined> {
+  const db = getFirestoreDb();
+  if (!db) return undefined;
+  const snap = await db.collection(COLLECTIONS.users).where("phoneNumber", "==", phoneNumber.trim()).limit(1).get();
+  if (snap.empty) return undefined;
+  return fromDoc<User>(snap.docs[0] as never);
+}
+
+/** Find a user by email or phone identifier with targeted queries (2 reads max). */
+export async function getUserByIdentifier(identifier: string): Promise<User | undefined> {
+  const id = identifier.trim().toLowerCase();
+  // Try email first (most common), then phone
+  const byEmail = await getUserByEmail(id);
+  if (byEmail) return byEmail;
+  return getUserByPhone(identifier.trim());
+}
+
 export async function insertUser(values: InsertUser): Promise<number> {
   return insertOne<User>("users", values as Record<string, unknown>);
 }

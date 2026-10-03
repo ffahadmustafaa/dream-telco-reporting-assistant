@@ -55,6 +55,9 @@ import {
   listTeamLeaders,
   listTesters,
   listUserSessions,
+  getUserByEmail,
+  getUserByIdentifier,
+  getUserByPhone,
   listUsers,
   updateAuthChallenge,
   updateOtpVerification,
@@ -286,9 +289,8 @@ export const appRouter = router({
     register: publicProcedure.input(z.object({ name: z.string().min(2).max(100), email: z.string().email().max(320), phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international format, e.g. +923001234567"), password: z.string().min(8), role: z.enum(["tester", "team_leader"]).default("tester"), teamLeaderId: z.number().int().positive().nullable().optional(), newTeamLeaderName: z.string().min(2).max(160).optional() })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const email = input.email.trim().toLowerCase(); const phoneNumber = input.phoneNumber.trim();
-      const existing = await listUsers();
-      if (existing.some(user => user.email?.toLowerCase() === email)) throw new Error("That email is already registered");
-      if (existing.some(user => user.phoneNumber === phoneNumber)) throw new Error("That phone number is already registered");
+      if (await getUserByEmail(email)) throw new Error("That email is already registered");
+      if (await getUserByPhone(phoneNumber)) throw new Error("That phone number is already registered");
       let teamLeaderId: number | undefined;
       if (input.role === "tester") {
         if (input.teamLeaderId) {
@@ -341,7 +343,7 @@ export const appRouter = router({
     login: publicProcedure.input(z.object({ identifier: z.string().min(3), password: z.string().min(1), remember: z.boolean().optional().default(false) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const identifier = input.identifier.trim().toLowerCase();
-      const user = (await listUsers()).find(item => item.email?.toLowerCase() === identifier || item.phoneNumber?.toLowerCase() === identifier);
+      const user = await getUserByIdentifier(identifier);
       if (!user || !user.passwordHash || !verifyPassword(input.password, user.passwordHash)) throw new Error("Invalid email/phone or password");
       if (user.accountStatus === "blocked") throw new Error("This account is blocked");
       if (!user.isVerified || !user.emailVerified || !user.phoneVerified) throw new Error("Verify both email and phone OTPs before signing in");
@@ -359,7 +361,7 @@ export const appRouter = router({
     requestPasswordReset: publicProcedure.input(z.object({ identifier: z.string().min(3).max(320) })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const identifier = input.identifier.trim().toLowerCase();
-      const user = (await listUsers()).find(item => item.email?.toLowerCase() === identifier || item.phoneNumber?.toLowerCase() === identifier);
+      const user = await getUserByIdentifier(identifier);
       if (!user || !user.email) return { accepted: true, sandboxMode: true, resetCode: String(Math.floor(100000 + Math.random() * 900000)) }; // no account enumeration: same shape, dummy code never stored
       const resetCode = String(Math.floor(100000 + Math.random() * 900000));
       await insertOtpVerification({ identifier: `pwdreset:${user.id}`, otpCode: resetCode, expiresAt: new Date(Date.now() + 15 * 60 * 1000), isUsed: 0 });
@@ -370,7 +372,7 @@ export const appRouter = router({
     resetPassword: publicProcedure.input(z.object({ identifier: z.string().min(3).max(320), resetCode: z.string().length(6), newPassword: z.string().min(8).max(128) })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const identifier = input.identifier.trim().toLowerCase();
-      const user = (await listUsers()).find(item => item.email?.toLowerCase() === identifier || item.phoneNumber?.toLowerCase() === identifier);
+      const user = await getUserByIdentifier(identifier);
       if (!user) throw new Error("Invalid or expired reset code");
       const match = (await listOtpVerifications()).find(item => item.identifier === `pwdreset:${user.id}` && item.otpCode === input.resetCode && item.isUsed === 0 && item.expiresAt > new Date());
       if (!match) throw new Error("Invalid or expired reset code");
