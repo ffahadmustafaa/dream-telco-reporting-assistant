@@ -490,8 +490,9 @@ export const appRouter = router({
         const leader = byLeader.get(row.teamLeaderId); const project = projectMap.get(row.projectId); const tester = testerMap.get(row.testerId); const quantity = money(row.quantity);
         if (!leader) continue;
         leader.total += quantity; leader.testers[tester?.name ?? `Tester ${row.testerId}`] = (leader.testers[tester?.name ?? `Tester ${row.testerId}`] ?? 0) + quantity;
-        if (project?.name === "Super X") leader.superX += quantity;
-        else if (project?.name === "Section X") leader.sectionX += quantity;
+        const projectName = (project?.name ?? "").toLowerCase();
+        if (projectName === "super x") leader.superX += quantity;
+        else if (project) leader.sectionX += quantity;
       }
       Array.from(byLeader.values()).forEach(item => { item.reporting = Object.keys(item.testers).length; item.zero = Math.max(0, item.activeTesters - item.reporting); });
       const leaders = Array.from(byLeader.values()).map(item => ({ ...item, average: item.activeTesters ? item.total / item.activeTesters : 0, bestTester: Object.entries(item.testers).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—", lowestTester: Object.entries(item.testers).sort((a, b) => a[1] - b[1])[0]?.[0] ?? "—" }));
@@ -888,7 +889,7 @@ export const appRouter = router({
       }
       for (const row of Array.from(grouped.values())) {
         const values = Array.from(projectByName.values()).map(project => ({ project, quantity: row.values.get(cleanName(project.name)) ?? 0 }));
-        if (!row.tester || !row.leader) { exceptions.push(`Could not safely match ${row.testerName}; row kept in report only.`); reportRows.push({ leader: row.leaderName, tester: row.testerName, superX: row.values.get("super x") ?? 0, sectionX: row.values.get("section x") ?? 0, total: Array.from(row.values.values()).reduce((a, b) => a + b, 0), superXPayout: 0, sectionXPayout: 0, totalPayout: 0 }); continue; }
+        if (!row.tester || !row.leader) { exceptions.push(`Could not safely match ${row.testerName}; row kept in report only.`); const sxProj = freshProjects.find(p => cleanName(p.name) === "super x"); const oxProj = freshProjects.find(p => p.id !== sxProj?.id); reportRows.push({ leader: row.leaderName, tester: row.testerName, superX: row.values.get("super x") ?? (sxProj ? row.values.get(cleanName(sxProj.name)) ?? 0 : 0), sectionX: oxProj ? row.values.get(cleanName(oxProj.name)) ?? 0 : 0, total: Array.from(row.values.values()).reduce((a, b) => a + b, 0), superXPayout: 0, sectionXPayout: 0, totalPayout: 0 }); continue; }
         for (const value of values.filter(item => row.values.has(cleanName(item.project.name)))) {
           const existing = await findPerformance(toDate(llmReportDate), row.tester.id, value.project.id);
           const accumulated = (existing ? money(existing.quantity) : 0) + value.quantity;
@@ -897,9 +898,11 @@ export const appRouter = router({
         }
         const saved = (await listPerformanceByDate(toDate(llmReportDate))).filter(item => item.testerId === row.tester!.id).slice(0, 50);
         const totals = new Map(freshProjects.map(project => [project.id, saved.filter(item => item.projectId === project.id).reduce((sum, item) => sum + Number(item.quantity), 0)]));
-        const superX = totals.get(projectByName.get("super x")?.id ?? -1) ?? 0; const sectionX = totals.get(projectByName.get("section x")?.id ?? -1) ?? 0;
+        const superXProject = freshProjects.find(p => cleanName(p.name) === "super x");
+        const otherProject = freshProjects.find(p => p.id !== superXProject?.id);
+        const superX = totals.get(superXProject?.id ?? -1) ?? 0; const sectionX = totals.get(otherProject?.id ?? -1) ?? 0;
         const payoutsByProject = new Map(freshProjects.map(project => { const otp = totals.get(project.id) ?? 0; const rule = rules.find(item => item.projectId === project.id && item.testerId === row.tester?.id) ?? rules.find(item => item.projectId === project.id && !item.testerId); return [project.id, rule?.fixedAmount != null ? money(rule.fixedAmount) : otp * money(rule?.ratePerOtp)] as const; }));
-        const superXPayout = payoutsByProject.get(projectByName.get("super x")?.id ?? -1) ?? 0; const sectionXPayout = payoutsByProject.get(projectByName.get("section x")?.id ?? -1) ?? 0;
+        const superXPayout = payoutsByProject.get(superXProject?.id ?? -1) ?? 0; const sectionXPayout = payoutsByProject.get(otherProject?.id ?? -1) ?? 0;
         stored += 1; reportRows.push({ leader: row.leader.name, tester: row.tester.name, superX, sectionX, total: Array.from(totals.values()).reduce((a, b) => a + b, 0), superXPayout, sectionXPayout, totalPayout: Array.from(payoutsByProject.values()).reduce((a, b) => a + b, 0) });
       }
       await insertImport({ fileName: `AI assistant ${llmReportDate}`, recordCount: extraction.rows.length, matchedCount: stored, exceptionCount: exceptions.length, status: exceptions.length ? "PARTIAL" : "PROCESSED", rawData: latest });
