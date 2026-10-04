@@ -5,6 +5,6 @@
  * never be statically imported by a page — always go through this helper
  * from a click/download handler instead.
  */
-export function loadXlsx(): Promise<typeof import("xlsx")> {
-  return import("xlsx");
+export function loadXlsx(): Promise<typeof import("xlsx-js-style")> {
+  return import("xlsx-js-style");
 }
