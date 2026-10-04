@@ -77,7 +77,7 @@ export function buildReportWorkbook(date: string, projects: string[], rows: Repo
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, "Daily Report");
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows.map(row => ({ Date: date, "Team Leader": row.leader, Tester: row.tester, ...row.values, Total: row.total }))), "Raw Data");
-  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx", cellStyles: true }) as Buffer;
 }
 
 export async function deliverDailyReport(date: string, workbook: Buffer, summary: string) {
