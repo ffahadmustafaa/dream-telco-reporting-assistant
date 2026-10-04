@@ -1,4 +1,7 @@
-import * as XLSX from "xlsx-js-style";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const XLSX = require("xlsx-js-style");
 import { notifyOwner } from "./_core/notification";
 import { getAppSettings } from "./db";
 
