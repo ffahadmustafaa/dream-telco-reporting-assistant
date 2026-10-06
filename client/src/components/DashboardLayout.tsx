@@ -24,6 +24,7 @@ import { useIsMobile } from "@/hooks/useMobile";
 import {
   Activity,
   Bot,
+  ChevronDown,
   ClipboardList,
   FileBarChart,
   FileSpreadsheet,
@@ -31,6 +32,7 @@ import {
   History,
   LayoutDashboard,
   LogOut,
+  MessageSquare,
   Moon,
   PanelLeft,
   CalendarClock,
@@ -66,9 +68,47 @@ const menuItems = [
   { icon: Users, label: "Admin dashboard", path: "/admin", adminOnly: true },
   { icon: Users, label: "User directory", path: "/users", adminOnly: true },
   { icon: CalendarClock, label: "Automation", path: "/automation", adminOnly: true },
+  {
+    icon: MessageSquare, label: "Whitenoise", adminOnly: true,
+    children: [
+      { label: "OTP per number", path: "/whitenoise/otp" },
+      { label: "App usage", path: "/whitenoise/apps" },
+      { label: "Tester totals", path: "/whitenoise/totals" },
+    ],
+  },
 ];
 const SIDEBAR_WIDTH_KEY = "dream-telco-sidebar-width";
 const DEFAULT_WIDTH = 252;
+
+function WhitenoiseGroup({ item, location, navigate }: { item: { icon: React.ElementType; label: string; children: Array<{ label: string; path: string }> }; location: string; navigate: (path: string) => void }) {
+  const [open, setOpen] = useState(() => item.children.some(child => child.path === location));
+  const isChildActive = item.children.some(child => child.path === location);
+  return <SidebarMenuItem>
+    <SidebarMenuButton
+      isActive={isChildActive}
+      onClick={() => setOpen(!open)}
+      tooltip={item.label}
+      className="h-10 gap-3 rounded-xl font-medium text-slate-500 dark:text-slate-400 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-700 dark:data-[active=true]:bg-emerald-950/60 dark:data-[active=true]:text-emerald-300"
+    >
+      <item.icon className="h-4 w-4" />
+      <span className="flex-1 text-left">{item.label}</span>
+      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+    </SidebarMenuButton>
+    {open && <div className="ml-4 mt-1 space-y-1 border-l border-slate-200 pl-2 dark:border-slate-700">
+      {item.children.map(child => (
+        <SidebarMenuButton
+          key={child.path}
+          isActive={location === child.path}
+          onClick={() => navigate(child.path)}
+          tooltip={child.label}
+          className="h-9 gap-3 rounded-lg text-sm font-medium text-slate-500 dark:text-slate-400 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-700 dark:data-[active=true]:bg-emerald-950/60 dark:data-[active=true]:text-emerald-300"
+        >
+          <span>{child.label}</span>
+        </SidebarMenuButton>
+      ))}
+    </div>}
+  </SidebarMenuItem>;
+}
 
 export default function DashboardLayout({
   children,
@@ -295,7 +335,9 @@ function DashboardLayoutContent({
             </div>
             <SidebarMenu className="px-2">
               {visibleMenuItems.map(item => (
-                <SidebarMenuItem key={item.path}>
+                item.children
+                  ? <WhitenoiseGroup key={item.label} item={item as { icon: React.ElementType; label: string; children: Array<{ label: string; path: string }> }} location={location} navigate={navigate} />
+                  : <SidebarMenuItem key={item.path}>
                   <SidebarMenuButton
                     isActive={location === item.path}
                     onClick={() => navigate(item.path)}

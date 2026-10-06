@@ -87,6 +87,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { isSandboxAuth, sendDualOtp, sendSecurityEmail } from "./_core/authDelivery";
 import { compileDailyReport } from "./scheduledReports";
 import { deliverDailyReport, reportAutomationStatus, reportDeliveryConfig } from "./reportDelivery";
+import { analyzeOtp, fetchWhitenoiseSms, getWhitenoiseConfig, getWhitenoiseRoster, parseManualSmsLog, saveWhitenoiseCredentials, saveWhitenoiseRoster, wnRangeEnd, wnRangeStart, type WnSmsRecord } from "./whitenoise";
 import { answerWorkspaceQuestion, parseAssistantCommand, parseQuestionDateRange, type AssistantCommand, type WorkspaceSnapshot } from "./aiAssistant";
 import { answerDatasetQuestion, parseWorkbook, summarizeDataset } from "./aiDataset";
 
@@ -452,6 +453,55 @@ export const appRouter = router({
       await deleteUser(input.userId);
       await addAuditLog({ action: "User Deleted", userId: ctx.user.id, oldValue: old, reason: "Admin moderation" });
       return { success: true };
+    }),
+  }),
+  whitenoise: router({
+    getConfig: adminProcedure.query(async () => {
+      const config = await getWhitenoiseConfig();
+      const roster = await getWhitenoiseRoster();
+      return { email: config.email, hasPassword: config.hasPassword, rosterCount: roster.length };
+    }),
+    saveCredentials: adminProcedure.input(z.object({ email: z.string().email().max(320), password: z.string().min(1).max(256) })).mutation(async ({ input }) => {
+      await saveWhitenoiseCredentials(input.email, input.password);
+      return { success: true } as const;
+    }),
+    getRoster: adminProcedure.query(async () => getWhitenoiseRoster()),
+    saveRoster: adminProcedure.input(z.object({ rows: z.array(z.object({ tester: z.string().max(160), teamLeader: z.string().max(160), number: z.string().max(32) })).max(2000) })).mutation(async ({ input }) => {
+      return saveWhitenoiseRoster(input.rows);
+    }),
+    /**
+     * Run an OTP check. Uses saved credentials + roster unless overridden.
+     * Set manualSmsRows to bypass whitenoise auto-fetch (fallback).
+     */
+    check: adminProcedure.input(z.object({
+      dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      roster: z.array(z.object({ tester: z.string().max(160), teamLeader: z.string().max(160), number: z.string().max(32) })).max(2000).optional(),
+      manualSmsRows: z.array(z.array(z.string().max(2000))).max(20000).optional(),
+      useAutoFetch: z.boolean().default(true),
+    })).mutation(async ({ input }) => {
+      const roster = input.roster?.length ? input.roster : await getWhitenoiseRoster();
+      if (!roster.length) throw new Error("No tester roster. Upload the tester Excel first.");
+      let sms: WnSmsRecord[];
+      let source: "whitenoise" | "manual";
+      if (input.manualSmsRows?.length) {
+        sms = parseManualSmsLog(input.manualSmsRows);
+        source = "manual";
+      } else if (input.useAutoFetch) {
+        const config = await getWhitenoiseConfig();
+        if (!config.email || !config.password) throw new Error("Whitenoise credentials are not configured. Save them first, or upload the SMS log manually.");
+        const numbers = roster.map(r => r.number).filter(Boolean);
+        sms = await fetchWhitenoiseSms(config.email, config.password, {
+          dateFrom: wnRangeStart(input.dateFrom),
+          dateTo: wnRangeEnd(input.dateTo),
+          numbers,
+        });
+        source = "whitenoise";
+      } else {
+        throw new Error("No SMS data source. Enable auto-fetch or upload the SMS log.");
+      }
+      const analysis = analyzeOtp(roster, sms);
+      return { ...analysis, smsCount: sms.length, source, dateFrom: input.dateFrom, dateTo: input.dateTo };
     }),
   }),
   adminDashboard: router({
