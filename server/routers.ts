@@ -669,6 +669,27 @@ export const appRouter = router({
       const projectRows = await listProjects();
       return rows.map(row => ({ ...row, project: projectRows.find(project => project.id === row.projectId)?.name ?? "Unknown" })).slice(0, 200);
     }),
+    teamHistory: protectedProcedure.query(async ({ ctx }) => {
+      if (!isDbConfigured()) return [];
+      if (ctx.user.accountRole !== "team_leader") throw new Error("Only team leaders can view team history");
+      const leader = (await listTeamLeaders()).find(item => cleanName(item.name) === cleanName(ctx.user.name ?? ""));
+      if (!leader) return [];
+      const testers = (await listTesters()).filter(tester => tester.teamLeaderId === leader.id);
+      const projectRows = await listProjects();
+      const projectName = (id: number) => projectRows.find(project => project.id === id)?.name ?? "Unknown";
+      const groups = [];
+      for (const tester of testers) {
+        const rows = await listPerformanceByTester(tester.id, 200);
+        groups.push({
+          testerId: tester.id,
+          testerName: tester.name,
+          status: tester.status,
+          total: rows.reduce((sum, row) => sum + Number(row.quantity), 0),
+          records: rows.map(row => ({ id: row.id, businessDate: row.businessDate, project: projectName(row.projectId), quantity: Number(row.quantity), source: row.source ?? null })),
+        });
+      }
+      return groups;
+    }),
     create: protectedProcedure.input(z.object({ businessDate: z.string(), testerId: z.number(), projectId: z.number(), quantity: z.union([z.number().nonnegative(), z.string().min(1).max(40)]), source: z.string().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
       const normalizedQuantity = parseQuantity(input.quantity);
       if (normalizedQuantity < 0) throw new Error("Quantity must be zero or greater");

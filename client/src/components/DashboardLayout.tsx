@@ -56,6 +56,7 @@ const menuItems = [
   { icon: ReceiptText, label: "Audit trail", path: "/audit" },
   { icon: Bot, label: "AI assistant", path: "/assistant" },
   { icon: History, label: "My history", path: "/history", testerOnly: true },
+  { icon: History, label: "Team history", path: "/team-history", leaderOnly: true },
   {
     icon: Settings,
     label: "Profile settings",
@@ -232,6 +233,7 @@ function DashboardLayoutContent({
   const visibleMenuItems = menuItems.filter(
     item =>
       (!item.adminOnly || user?.role === "admin") &&
+      (!item.leaderOnly || user?.accountRole === "team_leader" || user?.role === "admin") &&
       (user?.accountRole !== "tester" ||
         item.testerOnly ||
         item.path === "/daily")
