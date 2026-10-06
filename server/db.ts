@@ -395,6 +395,16 @@ export async function deleteUser(id: number): Promise<void> {
   return deleteOne("users", id);
 }
 
+/** Permanently remove a member's own account: sessions + user record. Roster and performance history stay (company data). */
+export async function deleteMyAccount(id: number): Promise<void> {
+  const db = requireDb();
+  const sessions = await db.collection(COLLECTIONS.userSessions).where("userId", "==", id).get();
+  const batch = db.batch();
+  sessions.docs.forEach(doc => batch.delete(doc.ref));
+  batch.delete(db.collection(COLLECTIONS.users).doc(String(id)));
+  await batch.commit();
+}
+
 /** Insert or update a user keyed by openId (mirrors the previous upsert). */
 export async function upsertUser(user: InsertUser): Promise<void> {
   const db = getFirestoreDb();

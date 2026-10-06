@@ -16,6 +16,7 @@ import {
   deleteTeamLeader,
   deleteTester,
   deleteTestersByLeader,
+  deleteMyAccount,
   deleteUser,
   ensureWorkspaceInitialized,
   findPerformance,
@@ -283,6 +284,15 @@ export const appRouter = router({
       if (ctx.user) {
         if (isDbConfigured()) await updateUserSessionByUserId(ctx.user.id, { isActive: 0, lastSeenAt: new Date() });
       }
+      ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+      return { success: true } as const;
+    }),
+    deleteMyAccount: protectedProcedure.mutation(async ({ ctx }) => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      if (ctx.user.accountRole === "admin" || ctx.user.role === "admin") throw new Error("Admin accounts cannot be deleted from the profile page");
+      const old = { id: ctx.user.id, name: ctx.user.name, email: ctx.user.email };
+      await deleteMyAccount(ctx.user.id);
+      await addAuditLog({ action: "Account Self-Deleted", userId: ctx.user.id, oldValue: old, reason: "Member deleted their own account from the profile page" });
       ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
       return { success: true } as const;
     }),
