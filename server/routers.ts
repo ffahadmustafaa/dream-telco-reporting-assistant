@@ -306,8 +306,18 @@ export const appRouter = router({
       if (input.role === "tester") {
         if (input.teamLeaderId) {
           const leader = await getTeamLeader(input.teamLeaderId);
-          if (!leader || leader.status !== "ACTIVE") throw new Error("Selected Team Leader is not active");
-          teamLeaderId = leader.id;
+          if (leader && leader.status === "ACTIVE") {
+            teamLeaderId = leader.id;
+          } else {
+            // The signup dropdown also lists team-leader login accounts (users
+            // collection). Fall back to validating the user account, then link
+            // the tester through that leader's roster entry (created if missing).
+            const userLeader = await getUser(input.teamLeaderId);
+            if (!userLeader || userLeader.accountRole !== "team_leader" || userLeader.accountStatus !== "active") {
+              throw new Error("Selected Team Leader is not active");
+            }
+            teamLeaderId = (await upsertTeamLeader(userLeader.name?.trim() || "Team Leader")).id;
+          }
         } else if (input.newTeamLeaderName?.trim()) {
           const leaderName = input.newTeamLeaderName.trim();
           const duplicate = (await listTeamLeaders()).find(item => cleanName(item.name) === cleanName(leaderName));
