@@ -69,7 +69,7 @@ const menuItems = [
   { icon: Users, label: "User directory", path: "/users", adminOnly: true },
   { icon: CalendarClock, label: "Automation", path: "/automation", adminOnly: true },
   {
-    icon: MessageSquare, label: "Whitenoise", adminOnly: true,
+    icon: MessageSquare, label: "Whitenoise", adminOnly: true, rootAdminOnly: true,
     children: [
       { label: "OTP per number", path: "/whitenoise/otp" },
       { label: "App usage", path: "/whitenoise/apps" },
@@ -273,6 +273,7 @@ function DashboardLayoutContent({
   const visibleMenuItems = menuItems.filter(
     item =>
       (!item.adminOnly || user?.role === "admin") &&
+      (!item.rootAdminOnly || user?.accountRole === "admin") &&
       (!item.leaderOnly || user?.accountRole === "team_leader" || user?.role === "admin") &&
       (user?.accountRole !== "tester" ||
         item.testerOnly ||
