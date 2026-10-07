@@ -18,6 +18,9 @@
 //  2) driftMinutes > 90 skip (configured reportTime far from 22:30 PKT)
 //  3) deliverDailyReport threw (SMTP auth/network; see Vercel runtime logs)
 
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+
 const FA = '/home/hatch/workspace/dream-telco-manus/node_modules/.pnpm/firebase-admin@14.5.0/node_modules/firebase-admin';
 const appMod = require(FA);
 const fsMod = require(FA + '/lib/firestore/index.js');

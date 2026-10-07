@@ -264,7 +264,7 @@ export const appRouter = router({
       const leader = ctx.user.teamLeaderId ? await getTeamLeader(ctx.user.teamLeaderId) : undefined;
       return { user: stripSecrets(ctx.user), teamLeader: leader ? { id: leader.id, name: leader.name, status: leader.status } : null };
     }),
-    updateProfile: protectedProcedure.input(z.object({ name: z.string().min(2).max(100), email: z.string().email().max(320), phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international phone format"), currentPassword: z.string().min(1), newPassword: z.string().min(8).max(128).optional() })).mutation(async ({ ctx, input }) => {
+    updateProfile: protectedProcedure.input(z.object({ name: z.string().min(2).max(100), email: z.string().email().max(320), phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international phone format"), currentPassword: z.string().min(1), newPassword: z.string().min(8).max(128).optional(), teamLeaderId: z.number().int().positive().nullable().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (!ctx.user.passwordHash || !verifyPassword(input.currentPassword, ctx.user.passwordHash)) throw new Error("Current password is incorrect");
       const email = input.email.trim().toLowerCase(); const phone = input.phoneNumber.trim();
@@ -276,10 +276,26 @@ export const appRouter = router({
         if (verifyPassword(input.newPassword, ctx.user.passwordHash)) throw new Error("New password must be different from the current password");
         patch.passwordHash = hashPassword(input.newPassword);
       }
+      // Testers may change their own team leader from the profile page.
+      let teamLeaderChanged = false;
+      if (input.teamLeaderId !== undefined && ctx.user.accountRole === "tester") {
+        const newLeaderId = input.teamLeaderId;
+        if (newLeaderId !== ctx.user.teamLeaderId) {
+          const leaders = await listTeamLeaders();
+          const target = leaders.find(l => l.id === newLeaderId && l.status === "ACTIVE");
+          if (!target) throw new Error("Selected Team Leader is not active");
+          patch.teamLeaderId = newLeaderId;
+          teamLeaderChanged = true;
+        }
+      }
       await updateUser(ctx.user.id, patch as Parameters<typeof updateUser>[1]);
+      if (teamLeaderChanged && ctx.user.name) {
+        // Keep the roster entry in sync with the new team assignment.
+        await upsertTesterByName(ctx.user.name, input.teamLeaderId as number);
+      }
       await setLocalSession(ctx, { openId: ctx.user.openId, name: input.name.trim() }, true);
-      await addAuditLog({ action: input.newPassword ? "Profile & Password Updated" : "Profile Updated", userId: ctx.user.id, newValue: { name: input.name.trim(), email, phoneNumber: phone, passwordChanged: Boolean(input.newPassword) }, reason: "Password-confirmed self-service update" });
-      return { success: true, passwordChanged: Boolean(input.newPassword), user: { name: input.name.trim(), email, phoneNumber: phone } };
+      await addAuditLog({ action: input.newPassword ? "Profile & Password Updated" : teamLeaderChanged ? "Profile & Team Leader Updated" : "Profile Updated", userId: ctx.user.id, newValue: { name: input.name.trim(), email, phoneNumber: phone, passwordChanged: Boolean(input.newPassword), teamLeaderId: teamLeaderChanged ? input.teamLeaderId : undefined }, reason: "Password-confirmed self-service update" });
+      return { success: true, passwordChanged: Boolean(input.newPassword), teamLeaderChanged, user: { name: input.name.trim(), email, phoneNumber: phone } };
     }),
     logout: publicProcedure.mutation(async ({ ctx }) => {
       if (ctx.user) {
