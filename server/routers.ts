@@ -124,6 +124,20 @@ async function getRegionScope(user: { accountRole?: string | null; regionId?: nu
   return { regionId, leaderIds, testerIds };
 }
 
+/**
+ * Role hierarchy guard: nobody except super_admin may touch a super_admin account,
+ * and nobody may grant a role at or above their own level.
+ * Hierarchy: super_admin > hq_admin > manager > team_leader/tester.
+ */
+function assertCanModifyAccount(caller: { accountRole?: string | null }, target: { accountRole?: string | null }, newRole?: string | null): void {
+  const callerIsSuper = caller.accountRole === "super_admin";
+  if (callerIsSuper) return;
+  if (target.accountRole === "super_admin") throw new Error("Only the super admin can modify super admin accounts");
+  if (newRole && ["super_admin", "hq_admin", "admin"].includes(newRole)) {
+    throw new Error("Only the super admin can assign that role");
+  }
+}
+
 /** Filter workspace data to a region scope (null scope = global, no filtering). */
 function applyRegionScope<T extends { teamLeaderId?: number | null; testerId?: number | null }>(
   scope: { leaderIds: number[]; testerIds: number[] } | null,
@@ -402,7 +416,11 @@ export const appRouter = router({
       } else if (input.role === "team_leader") {
         // Team-leader registrations are linked to the invite-code region on approval.
       }
-      const userId = await insertUser({ openId: `local_${randomBytes(16).toString("hex")}`, name: input.name.trim(), email, phoneNumber, passwordHash: hashPassword(input.password), loginMethod: "local", role: "user", accountRole: email === "ffahadmustafaa@gmail.com" ? "super_admin" : input.role, teamLeaderId: teamLeaderId ?? null, regionId, accountStatus: "pending", isVerified: 0, emailVerified: 0, phoneVerified: 0 });
+      // Bootstrap: the owner email only gets super_admin if no super_admin exists yet.
+      // This closes the hardcoded-email privilege path once the owner account is created.
+      const existingSupers = (await listUsers()).filter(u => u.accountRole === "super_admin");
+      const isBootstrapSuper = email === "ffahadmustafaa@gmail.com" && existingSupers.length === 0;
+      const userId = await insertUser({ openId: `local_${randomBytes(16).toString("hex")}`, name: input.name.trim(), email, phoneNumber, passwordHash: hashPassword(input.password), loginMethod: "local", role: "user", accountRole: isBootstrapSuper ? "super_admin" : input.role, teamLeaderId: teamLeaderId ?? null, regionId, accountStatus: "pending", isVerified: 0, emailVerified: 0, phoneVerified: 0 });
       return { userId, email, phoneNumber, sandboxMode: true };
     }),
     requestRegistrationOtp: publicProcedure.input(z.object({ userId: z.number() })).mutation(async ({ input }) => {
@@ -433,7 +451,8 @@ export const appRouter = router({
       if (!user) throw new Error("Registration account not found");
       const match = (await listAuthChallenges()).find(item => item.userId === input.userId && item.emailOtp === input.emailOtp && item.isCompleted === 0 && item.expiresAt > new Date());
       if (!match) throw new Error("The verification code is incorrect or expired.");
-      const isRootAdmin = user.email?.toLowerCase() === "ffahadmustafaa@gmail.com";
+      const existingSupers2 = (await listUsers()).filter(u => u.accountRole === "super_admin");
+      const isRootAdmin = user.email?.toLowerCase() === "ffahadmustafaa@gmail.com" && existingSupers2.length === 0;
       await updateAuthChallenge(match.id, { isCompleted: 1 });
       await updateUser(user.id, { emailVerified: 1, phoneVerified: 1, isVerified: 1, accountStatus: "active", role: isRootAdmin ? "admin" : "user", accountRole: isRootAdmin ? "admin" : user.accountRole, lastSignedIn: new Date() });
       if (user.accountRole === "team_leader") {
@@ -539,6 +558,8 @@ export const appRouter = router({
       if (scope) {
         if (target.regionId !== scope.regionId) throw new Error("User is not in your region");
         if (["manager", "hq_admin", "super_admin", "admin"].includes(target.accountRole)) throw new Error("You cannot change staff accounts");
+      } else {
+        assertCanModifyAccount(ctx.user, target);
       }
       await updateUser(input.userId, { accountStatus: input.status, isVerified: input.isVerified ?? (input.status === "active" ? 1 : 0) });
       const changedUser = await getUser(input.userId);
@@ -556,6 +577,8 @@ export const appRouter = router({
         if (target.regionId !== scope.regionId) throw new Error("User is not in your region");
         if (["manager", "hq_admin", "super_admin", "admin"].includes(target.accountRole)) throw new Error("You cannot change staff accounts");
         if (!["team_leader", "tester"].includes(input.accountRole)) throw new Error("Managers can only assign team leader or tester roles");
+      } else {
+        assertCanModifyAccount(ctx.user, target, input.accountRole);
       }
       await updateUser(input.userId, { accountRole: input.accountRole, teamLeaderId: input.accountRole === "tester" ? input.teamLeaderId ?? null : null });
       const roleChangedUser = await getUser(input.userId);
@@ -572,6 +595,8 @@ export const appRouter = router({
       if (scope) {
         if (old.regionId !== scope.regionId) throw new Error("User is not in your region");
         if (["manager", "hq_admin", "super_admin", "admin"].includes(old.accountRole)) throw new Error("You cannot remove staff accounts");
+      } else {
+        assertCanModifyAccount(ctx.user, old);
       }
       await deleteUser(input.userId);
       await addAuditLog({ action: "User Deleted", userId: ctx.user.id, oldValue: old, reason: "Admin moderation" });
@@ -793,7 +818,10 @@ export const appRouter = router({
       for (const row of data.performance) { const name = testerMap.get(row.testerId)?.name; if (!name) continue; const match = testerTotals.find(item => item[0] === name); if (match) match[1] += money(row.quantity); }
       const topTesters = testerTotals.sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, total]) => ({ name, total }));
       const payoutTotals = data.payouts.reduce((acc, item) => { acc.gross += money(item.grossPayout); acc.net += money(item.netPayout); if (item.status !== "MATCHED") acc.exceptions += 1; return acc; }, { gross: 0, net: 0, exceptions: 0 });
-      return { date: toDate(input.date).toISOString(), leaders, projects: data.projects, testers: data.testers, performance: data.performance, targets: data.targets, payouts: data.payouts, imports: data.imports, topTesters, payoutTotals, totals: { superX: leaders.reduce((n, x) => n + x.superX, 0), sectionX: leaders.reduce((n, x) => n + x.sectionX, 0), total: leaders.reduce((n, x) => n + x.total, 0), activeTesters: data.testers.filter(t => t.status === "ACTIVE").length, reportingTesters: leaders.reduce((n, x) => n + x.reporting, 0), zeroTesters: leaders.reduce((n, x) => n + x.zero, 0) } };
+      const isTester = ctx.user.accountRole === "tester";
+      const safePayouts = isTester ? data.payouts.map(row => ({ ...row, grossPayout: 0, netPayout: 0, deductions: 0 })) : data.payouts;
+      const safePayoutTotals = isTester ? { gross: 0, net: 0, exceptions: payoutTotals.exceptions } : payoutTotals;
+      return { date: toDate(input.date).toISOString(), leaders, projects: data.projects, testers: data.testers, performance: data.performance, targets: data.targets, payouts: safePayouts, imports: data.imports, topTesters, payoutTotals: safePayoutTotals, totals: { superX: leaders.reduce((n, x) => n + x.superX, 0), sectionX: leaders.reduce((n, x) => n + x.sectionX, 0), total: leaders.reduce((n, x) => n + x.total, 0), activeTesters: data.testers.filter(t => t.status === "ACTIVE").length, reportingTesters: leaders.reduce((n, x) => n + x.reporting, 0), zeroTesters: leaders.reduce((n, x) => n + x.zero, 0) } };
     }),
   }),
   roster: router({
@@ -1038,7 +1066,10 @@ export const appRouter = router({
       }
       const [visible, leaders] = await Promise.all([listTesters(), listTeamLeaders()]);
       const ids = visible.filter(tester => ctx.user.accountRole === "team_leader" ? cleanName(leaders.find(leader => leader.id === tester.teamLeaderId)?.name ?? "") === cleanName(ctx.user.name ?? "") : cleanName(tester.name) === cleanName(ctx.user.name ?? "")).map(tester => tester.id);
-      return rows.filter(row => row.testerId != null && ids.includes(row.testerId));
+      const filtered = rows.filter(row => row.testerId != null && ids.includes(row.testerId));
+      // Testers never see earnings: strip all amount fields
+      if (ctx.user.accountRole === "tester") return filtered.map(row => ({ ...row, grossPayout: 0, netPayout: 0, deductions: 0 }));
+      return filtered;
     }),
     update: managerProcedure.input(z.object({ payoutId: z.number(), netPayout: z.number().nonnegative(), grossPayout: z.number().nonnegative().optional(), deductions: z.number().nonnegative().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
@@ -1062,7 +1093,7 @@ export const appRouter = router({
       await addAuditLog({ action: "Payout Deleted", userId: ctx.user.id, oldValue: old, reason: "Payout override" });
       return { success: true };
     }),
-    importText: protectedProcedure.input(z.object({ fileName: z.string(), rawText: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    importText: managerProcedure.input(z.object({ fileName: z.string(), rawText: z.string().min(1) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const roster = await listTesters(); const leaders = await listTeamLeaders(); const projectRows = await listProjects();
       const rows = input.rawText.split(/\r?\n/).map((line: string) => line.trim()).filter(Boolean); let matched = 0; let exceptions = 0; const created: unknown[] = [];
@@ -1072,7 +1103,7 @@ export const appRouter = router({
         const parts = line.split(/[,\t|]+/).map((p: string) => p.trim()).filter(Boolean); const rawName = parts[0] ?? ""; const amountToken = parts.find((p: string) => /\d/.test(p) && !/^\d{4}-\d{2}-\d{2}$/.test(p)); const amount = amountToken ? Number(amountToken.replace(/[^0-9.-]/g, "")) : NaN; const exactMatches = roster.filter(item => item.name.toLowerCase() === rawName.toLowerCase()); const ambiguous = exactMatches.length > 1; const tester = exactMatches.length === 1 ? exactMatches[0] : undefined; const possible = !tester && !ambiguous ? roster.find(item => item.name.toLowerCase().startsWith(rawName.toLowerCase()) || rawName.toLowerCase().startsWith(item.name.toLowerCase())) : undefined; const duplicate = seenRows.has(line.toLowerCase()); seenRows.add(line.toLowerCase()); const leader = tester ? leaders.find(item => item.id === tester.teamLeaderId) : undefined; const status = !Number.isFinite(amount) ? "MISSING_AMOUNT" : duplicate ? "DUPLICATE" : ambiguous ? "CONFLICT" : tester ? "MATCHED" : possible ? "POSSIBLE_MATCH" : "UNMATCHED";
         if (status === "MATCHED") matched++; else exceptions++;
         const note = ambiguous ? `Ambiguous tester name matched ${exactMatches.length} roster records` : possible ? `Possible match: ${possible.name}` : duplicate ? "Repeated source row" : `Source row ${index + 1}`;
-        const id = await insertPayout({ payoutDate: new Date(), testerId: tester?.id ?? null, teamLeaderId: leader?.id ?? null, testerNameRaw: rawName || `Row ${index + 1}`, projectNameRaw: parts[1] ?? null, projectId: projectRows.find(p => p.name.toLowerCase() === (parts[1] ?? "").toLowerCase())?.id ?? null, grossPayout: Number.isFinite(amount) ? amount : 0, deductions: 0, netPayout: Number.isFinite(amount) ? amount : 0, sourceFile: input.fileName, status: status as Payout["status"], notes: note });
+        const id = await insertPayout({ payoutDate: new Date(), testerId: tester?.id ?? null, teamLeaderId: leader?.id ?? null, testerNameRaw: rawName || `Row ${index + 1}`, projectNameRaw: parts[1] ?? null, projectId: projectRows.find(p => p.name.toLowerCase() === (parts[1] ?? "").toLowerCase())?.id ?? null, grossPayout: Number.isFinite(amount) ? amount : 0, deductions: 0, netPayout: Number.isFinite(amount) ? amount : 0, sourceFile: input.fileName, status: status as Payout["status"], reviewStatus: "PENDING", createdAt: new Date(), notes: note });
         created.push({ id });
       }
       await insertImport({ fileName: input.fileName, recordCount: rows.length, matchedCount: matched, exceptionCount: exceptions, status: exceptions ? "PARTIAL" : "PROCESSED", rawData: input.rawText });
@@ -1216,13 +1247,19 @@ export const appRouter = router({
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       await ensureWorkspaceInitialized(ctx.user.id);
       const reportDate = input.businessDate ?? new Date().toISOString().slice(0, 10);
-      const [roster, leaderRows, projectRows] = await Promise.all([listTesters(), listTeamLeaders(), listActiveProjects()]);
+      const [allTesters, allLeaders, projectRows] = await Promise.all([listTesters(), listTeamLeaders(), listActiveProjects()]);
       const activeProjectNames = projectRows.map(project => project.name);
-      const isAdmin = ctx.user.accountRole === "admin" || ctx.user.role === "admin";
+      // HQ-level (super_admin/hq_admin) sees everything; managers are region-scoped.
+      const isHq = isHqLevel(ctx.user);
+      const regionScope = !isHq && ctx.user.accountRole === "manager" ? await getRegionScope(ctx.user) : null;
+      const roster = regionScope ? allTesters.filter(t => regionScope.testerIds.includes(t.id)) : allTesters;
+      const leaderRows = regionScope ? allLeaders.filter(l => regionScope.leaderIds.includes(l.id)) : allLeaders;
+      const isAdmin = isHq;
       const commandUser: CommandUser = { id: ctx.user.id, name: ctx.user.name, accountRole: ctx.user.accountRole, isAdmin };
       const ownLeader = commandUser.accountRole === "team_leader" ? leaderRows.find(item => cleanName(item.name) === cleanName(commandUser.name ?? "")) : undefined;
-      const scopeTesters = isAdmin ? roster : commandUser.accountRole === "team_leader" ? roster.filter(item => ownLeader && item.teamLeaderId === ownLeader.id) : roster.filter(item => cleanName(item.name) === cleanName(commandUser.name ?? ""));
-      const scopeLeaders = isAdmin ? leaderRows : ownLeader ? [ownLeader] : [];
+      const scopeTesters = isAdmin || regionScope ? roster : commandUser.accountRole === "team_leader" ? roster.filter(item => ownLeader && item.teamLeaderId === ownLeader.id) : roster.filter(item => cleanName(item.name) === cleanName(commandUser.name ?? ""));
+      const scopeLeaders = isAdmin || regionScope ? leaderRows : ownLeader ? [ownLeader] : [];
+      const scopeTesterIds = new Set(scopeTesters.map(t => t.id));
 
       // Layer 1: deterministic commands (instant, no LLM). Handles report logging with
       // accumulation + roster auto-add, add/remove tester/team leader, and set_target.
@@ -1240,7 +1277,7 @@ export const appRouter = router({
 
       // Layer 3: LLM fallback for multi-row reports, payout rules, and free-form chat.
       const answer = await invokeLLM({
-        messages: [{ role: "system", content: `You are a daily operations, reporting, and payout engine. Return JSON only. Active project order is: ${activeProjectNames.join(" / ")}. Commands include addLeader, addTester, deleteLeader, deleteTester, addProject, renameProject, deleteProject, setPayoutRule. A setPayoutRule action stores either rate per OTP or a fixed tester/project amount; parse 2k, 3.5k, and 5k as 2000, 3500, and 5000. If the user asks for payout, set payoutRequested true. Only create roster/project/rule records for explicit database commands. For reports, parse named project values and slash notation X/Y or X/Y/Z strictly in active project order. Return one row per tester with a values array containing project names and quantities. Leave leader empty when omitted so the server can infer it. Fuzzy-match abbreviations and typos, but never invent counts. ` }, ...input.messages.map(message => ({ role: message.role as "user" | "assistant" | "system", content: message.content }))],
+        messages: [{ role: "system", content: `You are a daily operations, reporting, and payout engine. Return JSON only. Active project order is: ${activeProjectNames.join(" / ")}. Commands include addLeader, addTester, deleteLeader, deleteTester, addProject, renameProject, deleteProject, setPayoutRule. A setPayoutRule action stores either rate per OTP or a fixed tester/project amount; parse 2k, 3.5k, and 5k as 2000, 3500, and 5000. If the user asks for payout, set payoutRequested true. Only create roster/project/rule records for explicit database commands. For reports, parse named project values and slash notation X/Y or X/Y/Z strictly in active project order. Return one row per tester with a values array containing project names and quantities. Leave leader empty when omitted so the server can infer it. Fuzzy-match abbreviations and typos, but never invent counts. ` }, ...input.messages.filter(message => message.role !== "system").map(message => ({ role: message.role as "user" | "assistant", content: message.content }))],
         response_format: { type: "json_schema", json_schema: { name: "assistant_command", strict: true, schema: { type: "object", properties: { answer: { type: "string" }, date: { type: "string" }, payoutRequested: { type: "boolean" }, actions: { type: "array", items: { type: "object", properties: { type: { type: "string", enum: ["addLeader", "addTester", "deleteLeader", "deleteTester", "addProject", "renameProject", "deleteProject", "setPayoutRule"] }, name: { type: "string" }, leader: { type: "string" }, projectId: { type: "number" }, project: { type: "string" }, tester: { type: "string" }, rate: { type: "number" }, fixed: { type: "number" } }, required: ["type", "name", "leader", "projectId", "project", "tester", "rate", "fixed"], additionalProperties: false } }, rows: { type: "array", items: { type: "object", properties: { leader: { type: "string" }, tester: { type: "string" }, values: { type: "array", items: { type: "object", properties: { project: { type: "string" }, quantity: { type: "number" } }, required: ["project", "quantity"], additionalProperties: false } } }, required: ["leader", "tester", "values"], additionalProperties: false } }, notes: { type: "array", items: { type: "string" } } }, required: ["answer", "date", "payoutRequested", "actions", "rows", "notes"], additionalProperties: false } } },
         max_tokens: 4000,
       });
@@ -1265,8 +1302,10 @@ export const appRouter = router({
       const [freshRoster, freshLeaders, freshProjects, rules] = await Promise.all([listTesters(), listTeamLeaders(), listProjects(), listActivePayoutRules()]);
       const projectByName = new Map(freshProjects.map(project => [cleanName(project.name), project]));
       const grouped = new Map<string, { leaderName: string; testerName: string; values: Map<string, number>; tester?: typeof freshRoster[number]; leader?: typeof freshLeaders[number] }>();
+      const scopedRoster = regionScope ? freshRoster.filter(item => regionScope.testerIds.includes(item.id)) : isHq ? freshRoster : freshRoster.filter(item => scopeTesterIds.has(item.id));
       for (const row of extraction.rows) {
-        const candidates = freshRoster.filter(item => cleanName(item.name) === cleanName(row.tester));
+        const candidates = scopedRoster.filter(item => cleanName(item.name) === cleanName(row.tester));
+        if (!candidates.length && !isHq && !regionScope) { exceptions.push(`Tester ${row.tester} is not in your scope; row skipped.`); continue; }
         const tester = candidates.length === 1 ? candidates[0] : undefined;
         const explicitLeader = row.leader.trim() ? freshLeaders.find(item => cleanName(item.name) === cleanName(row.leader)) : undefined;
         const inferredLeader = tester ? freshLeaders.find(item => item.id === tester.teamLeaderId) : undefined;
@@ -1277,7 +1316,7 @@ export const appRouter = router({
         for (const value of row.values) item.values.set(cleanName(value.project), (item.values.get(cleanName(value.project)) ?? 0) + Number(value.quantity));
         item.tester = tester ?? item.tester; item.leader = leader ?? item.leader; grouped.set(key, item);
       }
-      for (const tester of freshRoster.filter(item => item.status === "ACTIVE")) {
+      for (const tester of scopedRoster.filter(item => item.status === "ACTIVE")) {
         const leader = freshLeaders.find(item => item.id === tester.teamLeaderId); if (!leader) continue;
         const key = `${cleanName(leader.name)}|${cleanName(tester.name)}`;
         if (!grouped.has(key)) grouped.set(key, { leaderName: leader.name, testerName: tester.name, values: new Map(), tester, leader });
