@@ -17,6 +17,37 @@ function SectionHeading({ eyebrow, title, description }: { eyebrow: string; titl
   return <div className="mb-7"><p className="text-xs font-extrabold uppercase tracking-[.18em] text-[#13897f]">{eyebrow}</p><h1 className="mt-2 text-2xl font-extrabold tracking-[-.035em] text-[#10233f] sm:text-3xl">{title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{description}</p></div>;
 }
 
+/** Parse pasted roster text: one entry per line.
+ * Accepted formats per line:
+ *   03001234567
+ *   Ali, 03001234567
+ *   Ali | 03001234567 | Rabia
+ * Lines without a recognizable phone number are skipped. */
+function parseRosterText(text: string): RosterRow[] {
+  const rows: RosterRow[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const parts = line.split(/[,|\t]/).map(p => p.trim()).filter(Boolean);
+    // Find the phone number: the part with the most digits
+    let numberIdx = -1;
+    let maxDigits = 0;
+    parts.forEach((part, i) => {
+      const digits = part.replace(/\D/g, "");
+      if (digits.length >= 7 && digits.length > maxDigits) {
+        maxDigits = digits.length;
+        numberIdx = i;
+      }
+    });
+    if (numberIdx < 0) continue;
+    const number = parts[numberIdx] ?? "";
+    const tester = parts.find((_, i) => i !== numberIdx && !/^\+?\d[\d\s-]*$/.test(parts[i] ?? "")) ?? number;
+    const teamLeader = parts.filter((_, i) => i !== numberIdx && parts[i] !== tester).find(p => !/^\+?\d[\d\s-]*$/.test(p)) ?? "";
+    rows.push({ tester, teamLeader, number });
+  }
+  return rows;
+}
+
 /** Parse an uploaded roster Excel: expects Tester | Team Leader | Number columns (any order, header matched). */
 async function parseRosterFile(file: File): Promise<RosterRow[]> {
   const XLSX = await loadXlsx();
@@ -103,6 +134,7 @@ function useWhitenoiseCheck() {
   const [dateTo, setDateTo] = useState(today);
   const [roster, setRoster] = useState<RosterRow[] | null>(null);
   const [useSavedRoster, setUseSavedRoster] = useState(true);
+  const [pastedText, setPastedText] = useState("");
   const [manualSms, setManualSms] = useState<string[][] | null>(null);
   const [useAutoFetch, setUseAutoFetch] = useState(true);
 
@@ -110,10 +142,22 @@ function useWhitenoiseCheck() {
     try {
       const rows = await parseRosterFile(file);
       setRoster(rows);
+      setPastedText("");
       setUseSavedRoster(false);
       toast.success(`${rows.length} tester numbers loaded from file`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not read the roster file");
+    }
+  };
+
+  const handlePastedText = (text: string) => {
+    setPastedText(text);
+    const rows = parseRosterText(text);
+    if (rows.length > 0) {
+      setRoster(rows);
+      setUseSavedRoster(false);
+    } else if (!text.trim()) {
+      setRoster(null);
     }
   };
 
@@ -159,6 +203,7 @@ function useWhitenoiseCheck() {
   return {
     config, dateFrom, setDateFrom, dateTo, setDateTo,
     roster, useSavedRoster, setUseSavedRoster, handleRosterFile, persistRoster,
+    pastedText, handlePastedText,
     manualSms, useAutoFetch, setUseAutoFetch, handleSmsFile,
     run, isPending: check.isPending,
   };
@@ -178,6 +223,19 @@ function CheckControls({ ctl }: { ctl: ReturnType<typeof useWhitenoiseCheck> }) 
           <Button size="sm" variant="outline" onClick={() => void ctl.persistRoster()}>Save for reuse</Button>
         </>}
         {(ctl.config.data?.rosterCount ?? 0) > 0 && <Button size="sm" variant={ctl.useSavedRoster ? "default" : "outline"} onClick={() => ctl.setUseSavedRoster(true)}>Use saved ({ctl.config.data?.rosterCount})</Button>}
+      </div>
+      <div className="mt-3">
+        <Label className="text-xs text-slate-500">Or paste numbers directly (one per line)</Label>
+        <textarea
+          value={ctl.pastedText}
+          onChange={e => ctl.handlePastedText(e.target.value)}
+          placeholder={"03001234567\nAli, 03007654321\nSara | 03009876543 | Rabia"}
+          rows={3}
+          className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none"
+        />
+        {ctl.pastedText.trim() && ctl.roster && !ctl.useSavedRoster && (
+          <p className="mt-1 text-xs text-emerald-700">{ctl.roster.length} numbers ready from pasted text.</p>
+        )}
       </div>
     </div>
     <div className="grid gap-4 sm:grid-cols-2">
