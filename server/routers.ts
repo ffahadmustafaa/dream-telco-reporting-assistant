@@ -528,29 +528,49 @@ export const appRouter = router({
       const visible = scope ? rows.filter(user => user.regionId === scope.regionId) : rows;
       return visible.map(user => { const { passwordHash: _passwordHash, ...safeUser } = user; return { ...safeUser, teamLeader: leaders.find(leader => leader.id === user.teamLeaderId)?.name ?? null, session: sessions.find(session => session.userId === user.id) ?? null }; });
     }),
-    updateStatus: hqAdminProcedure.input(z.object({ userId: z.number(), status: z.enum(["active", "pending", "blocked"]), isVerified: z.number().int().min(0).max(1).optional() })).mutation(async ({ ctx, input }) => {
+    updateStatus: managerProcedure.input(z.object({ userId: z.number(), status: z.enum(["active", "pending", "blocked"]), isVerified: z.number().int().min(0).max(1).optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (input.userId === ctx.user.id && input.status === "blocked") throw new Error("You cannot block the current admin session");
+      const target = await getUser(input.userId);
+      if (!target) throw new Error("User not found");
+      const scope = await getRegionScope(ctx.user);
+      if (scope) {
+        if (target.regionId !== scope.regionId) throw new Error("User is not in your region");
+        if (["manager", "hq_admin", "super_admin", "admin"].includes(target.accountRole)) throw new Error("You cannot change staff accounts");
+      }
       await updateUser(input.userId, { accountStatus: input.status, isVerified: input.isVerified ?? (input.status === "active" ? 1 : 0) });
       const changedUser = await getUser(input.userId);
       if (changedUser) invalidateUserCache(changedUser.openId);
-      await addAuditLog({ action: "User Status Updated", userId: ctx.user.id, newValue: input, reason: "Admin moderation" });
+      await addAuditLog({ action: "User Status Updated", userId: ctx.user.id, newValue: input, reason: "Staff moderation" });
       return { success: true };
     }),
-    updateRole: hqAdminProcedure.input(z.object({ userId: z.number(), accountRole: z.enum(["hq_admin", "manager", "admin", "team_leader", "tester"]), teamLeaderId: z.number().nullable().optional() })).mutation(async ({ ctx, input }) => {
+    updateRole: managerProcedure.input(z.object({ userId: z.number(), accountRole: z.enum(["hq_admin", "manager", "admin", "team_leader", "tester"]), teamLeaderId: z.number().nullable().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (input.userId === ctx.user.id && input.accountRole !== "admin") throw new Error("The owner admin role cannot be removed from the current session");
+      const target = await getUser(input.userId);
+      if (!target) throw new Error("User not found");
+      const scope = await getRegionScope(ctx.user);
+      if (scope) {
+        if (target.regionId !== scope.regionId) throw new Error("User is not in your region");
+        if (["manager", "hq_admin", "super_admin", "admin"].includes(target.accountRole)) throw new Error("You cannot change staff accounts");
+        if (!["team_leader", "tester"].includes(input.accountRole)) throw new Error("Managers can only assign team leader or tester roles");
+      }
       await updateUser(input.userId, { accountRole: input.accountRole, teamLeaderId: input.accountRole === "tester" ? input.teamLeaderId ?? null : null });
       const roleChangedUser = await getUser(input.userId);
       if (roleChangedUser) invalidateUserCache(roleChangedUser.openId);
-      await addAuditLog({ action: "User Role Updated", userId: ctx.user.id, newValue: input, reason: "Admin role assignment" });
+      await addAuditLog({ action: "User Role Updated", userId: ctx.user.id, newValue: input, reason: "Staff role assignment" });
       return { success: true };
     }),
-    delete: hqAdminProcedure.input(z.object({ userId: z.number() })).mutation(async ({ ctx, input }) => {
+    delete: managerProcedure.input(z.object({ userId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (input.userId === ctx.user.id) throw new Error("You cannot delete the current admin session");
       const old = await getUser(input.userId);
       if (!old) throw new Error("User not found");
+      const scope = await getRegionScope(ctx.user);
+      if (scope) {
+        if (old.regionId !== scope.regionId) throw new Error("User is not in your region");
+        if (["manager", "hq_admin", "super_admin", "admin"].includes(old.accountRole)) throw new Error("You cannot remove staff accounts");
+      }
       await deleteUser(input.userId);
       await addAuditLog({ action: "User Deleted", userId: ctx.user.id, oldValue: old, reason: "Admin moderation" });
       return { success: true };
