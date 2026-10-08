@@ -525,7 +525,9 @@ export const appRouter = router({
       if (!isDbConfigured()) return [];
       const [rows, leaders, sessions] = await Promise.all([listUsers(), listTeamLeaders(), listUserSessions()]);
       const scope = await getRegionScope(ctx.user);
-      const visible = scope ? rows.filter(user => user.regionId === scope.regionId) : rows;
+      const visible = scope
+        ? rows.filter(user => user.regionId === scope.regionId && (user.accountRole === "team_leader" || user.accountRole === "tester"))
+        : rows;
       return visible.map(user => { const { passwordHash: _passwordHash, ...safeUser } = user; return { ...safeUser, teamLeader: leaders.find(leader => leader.id === user.teamLeaderId)?.name ?? null, session: sessions.find(session => session.userId === user.id) ?? null }; });
     }),
     updateStatus: managerProcedure.input(z.object({ userId: z.number(), status: z.enum(["active", "pending", "blocked"]), isVerified: z.number().int().min(0).max(1).optional() })).mutation(async ({ ctx, input }) => {
@@ -722,7 +724,9 @@ export const appRouter = router({
       if (!isDbConfigured()) return { users: [], payouts: [], metrics: { totalUsers: 0, pendingUsers: 0, activeUsers: 0, blockedUsers: 0, pendingPayouts: 0, approvedPayouts: 0, paidPayouts: 0, payoutValue: 0 } };
       const [userRows, payoutRows] = await Promise.all([listUsers(), listPayouts(200)]);
       const scope = await getRegionScope(ctx.user);
-      const users = scope ? userRows.filter(u => u.regionId === scope.regionId) : userRows;
+      const users = scope
+        ? userRows.filter(u => u.regionId === scope.regionId && (u.accountRole === "team_leader" || u.accountRole === "tester"))
+        : userRows;
       const payouts = scope ? payoutRows.filter(p => (p.testerId != null && scope.testerIds.includes(p.testerId)) || (p.teamLeaderId != null && scope.leaderIds.includes(p.teamLeaderId))) : payoutRows;
       const safeUsers = users.map(user => { const { passwordHash: _passwordHash, ...safeUser } = user; return safeUser; });
       const metrics = { totalUsers: safeUsers.length, pendingUsers: safeUsers.filter(user => user.accountStatus === "pending").length, activeUsers: safeUsers.filter(user => user.accountStatus === "active").length, blockedUsers: safeUsers.filter(user => user.accountStatus === "blocked").length, pendingPayouts: payouts.filter(row => row.reviewStatus === "PENDING").length, approvedPayouts: payouts.filter(row => row.reviewStatus === "APPROVED").length, paidPayouts: payouts.filter(row => row.reviewStatus === "PAID").length, payoutValue: payouts.filter(row => row.reviewStatus !== "REJECTED").reduce((sum, row) => sum + money(row.netPayout), 0) };
