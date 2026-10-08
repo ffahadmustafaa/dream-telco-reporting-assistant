@@ -720,6 +720,11 @@ export const appRouter = router({
     reportDelivery: superAdminProcedure.query(() => reportDeliveryConfig()),
     sendTestReport: superAdminProcedure.mutation(async () => { const report = await compileDailyReport(); const delivery = await deliverDailyReport(report.date, report.workbook, `${report.summary}\n\nThis was a manual test dispatch from the Admin Dashboard.`); return { success: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery }; }),
     exportReport: superAdminProcedure.mutation(async () => { const report = await compileDailyReport(); return { fileName: `Daily_Operations_Report_${report.date}.xlsx`, contentBase64: report.workbook.toString("base64"), date: report.date, rows: report.rows.length, grandTotal: report.grandTotal }; }),
+    exportDailyReport: managerProcedure.input(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => {
+      const scope = await getRegionScope(ctx.user);
+      const report = await compileDailyReport(input.date, scope?.regionId ?? undefined);
+      return { fileName: `Daily_Operations_Report_${report.date}${scope ? `_Region${scope.regionId}` : ""}.xlsx`, contentBase64: report.workbook.toString("base64"), date: report.date, rows: report.rows.length, grandTotal: report.grandTotal };
+    }),
     summary: managerProcedure.query(async ({ ctx }) => {
       if (!isDbConfigured()) return { users: [], payouts: [], metrics: { totalUsers: 0, pendingUsers: 0, activeUsers: 0, blockedUsers: 0, pendingPayouts: 0, approvedPayouts: 0, paidPayouts: 0, payoutValue: 0 } };
       const [userRows, payoutRows] = await Promise.all([listUsers(), listPayouts(200)]);
