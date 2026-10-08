@@ -3,7 +3,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { invokeLLM } from "./_core/llm";
 import { adminProcedure, hqAdminProcedure, isHqLevel, isManagerLevel, isSuperAdmin, managerProcedure, protectedProcedure, publicProcedure, router, staffRegionScope, superAdminProcedure } from "./_core/trpc";
-import { createSessionToken } from "./_core/session";
+import { createSessionToken, invalidateUserCache } from "./_core/session";
 import {
   addAuditLog,
   deletePayout,
@@ -532,6 +532,8 @@ export const appRouter = router({
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (input.userId === ctx.user.id && input.status === "blocked") throw new Error("You cannot block the current admin session");
       await updateUser(input.userId, { accountStatus: input.status, isVerified: input.isVerified ?? (input.status === "active" ? 1 : 0) });
+      const changedUser = await getUser(input.userId);
+      if (changedUser) invalidateUserCache(changedUser.openId);
       await addAuditLog({ action: "User Status Updated", userId: ctx.user.id, newValue: input, reason: "Admin moderation" });
       return { success: true };
     }),
@@ -539,6 +541,8 @@ export const appRouter = router({
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (input.userId === ctx.user.id && input.accountRole !== "admin") throw new Error("The owner admin role cannot be removed from the current session");
       await updateUser(input.userId, { accountRole: input.accountRole, teamLeaderId: input.accountRole === "tester" ? input.teamLeaderId ?? null : null });
+      const roleChangedUser = await getUser(input.userId);
+      if (roleChangedUser) invalidateUserCache(roleChangedUser.openId);
       await addAuditLog({ action: "User Role Updated", userId: ctx.user.id, newValue: input, reason: "Admin role assignment" });
       return { success: true };
     }),
@@ -711,6 +715,7 @@ export const appRouter = router({
       const scope = await getRegionScope(ctx.user);
       if (scope && target.regionId !== scope.regionId) throw new Error("User is not in your region");
       await updateUser(input.userId, { accountStatus: "active", isVerified: 1 });
+      invalidateUserCache(target.openId);
       await addAuditLog({ action: "User Approved", userId: ctx.user.id, newValue: { userId: input.userId, email: target.email }, reason: "Staff approval" });
       return { success: true };
     }),

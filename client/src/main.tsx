@@ -6,7 +6,18 @@ import superjson from "superjson";
 import App from "./App";
 import "./index.css";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Treat data as fresh for 30s so page navigation doesn't refetch
+      // from the database every time (matters at 400+ users).
+      staleTime: 30 * 1000,
+      gcTime: 5 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
 
 const trpcClient = trpc.createClient({
   links: [

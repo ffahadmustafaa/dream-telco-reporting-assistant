@@ -82,7 +82,13 @@ export function extractSessionToken(req: { headers: Record<string, string | stri
 /**
  * Resolve the request's session to a database user, creating/updating the
  * local user row on each authenticated request (same as before).
+ *
+ * Users are cached in memory for 60 seconds to avoid a Firestore read on
+ * every single API call (matters at 400+ users).
  */
+const userCache = new Map<string, { user: User; expiresAt: number }>();
+const USER_CACHE_TTL_MS = 60 * 1000;
+
 export async function authenticateRequest(req: {
   headers: Record<string, string | string[] | undefined>;
 }): Promise<User> {
@@ -90,7 +96,23 @@ export async function authenticateRequest(req: {
   if (!token) throw new UnauthorizedError("Missing session");
   const session = await verifySession(token);
   if (!session) throw new UnauthorizedError("Invalid or expired session");
+  const cached = userCache.get(session.openId);
+  if (cached && cached.expiresAt > Date.now()) return cached.user;
   const user = await getUserByOpenId(session.openId);
   if (!user) throw new ForbiddenError("User not found");
+  userCache.set(session.openId, { user, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+  if (userCache.size > 5000) {
+    let oldestKey: string | null = null;
+    let oldestExpiry = Infinity;
+    userCache.forEach((entry, key) => {
+      if (entry.expiresAt < oldestExpiry) { oldestExpiry = entry.expiresAt; oldestKey = key; }
+    });
+    if (oldestKey) userCache.delete(oldestKey);
+  }
   return user;
+}
+
+/** Drop a cached user so the next request re-reads from the database. */
+export function invalidateUserCache(openId: string): void {
+  userCache.delete(openId);
 }
