@@ -363,6 +363,10 @@ export function Automation() {
       <Card className="border-slate-200 shadow-none">
         <CardHeader className="border-b border-slate-100 px-6 py-5"><CardTitle className="text-base">Daily report schedule</CardTitle><p className="mt-1 text-xs text-slate-500">The automatic run is driven by the deployment&apos;s daily schedule (22:30 PKT). If you change the time here, also update the cron schedule in <code className="rounded bg-slate-100 px-1">vercel.json</code> and redeploy.</p></CardHeader>
         <CardContent className="space-y-4 p-6">
+          <label className="flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <span><span className="block text-sm font-semibold text-slate-800">Daily auto-report emails</span><span className="block text-[11px] text-slate-400">When off, the 10:30 PM cron run is skipped. Reports can still be generated manually.</span></span>
+            <input type="checkbox" className="h-5 w-5 accent-emerald-600" checked={(settings.data?.autoReportEnabled ?? 1) === 1} disabled={save.isPending} onChange={event => save.mutate({ autoReportEnabled: event.target.checked })} />
+          </label>
           <form onSubmit={submit} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div><Label>Report time</Label><Input className="mt-2 h-11" type="time" value={form.reportTime} onChange={update("reportTime")} required /></div>

@@ -980,6 +980,8 @@ export interface AppSettings {
   smtpFrom: string | null;
   /** ISO timestamp of the last scheduled auto-report send. */
   lastAutoReport: string | null;
+  /** 1 = the 10:30 PM auto-report cron sends emails; 0 = paused. */
+  autoReportEnabled: number;
   updatedAt: Date;
 }
 
@@ -994,6 +996,7 @@ const DEFAULT_APP_SETTINGS = {
   smtpPass: null as string | null,
   smtpFrom: null as string | null,
   lastAutoReport: null as string | null,
+  autoReportEnabled: 1,
 };
 
 /** Singleton settings document (id "1"), created lazily with defaults. */

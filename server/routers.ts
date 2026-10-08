@@ -1137,9 +1137,11 @@ export const appRouter = router({
       smtpUser: z.string().max(200).nullable().optional(),
       smtpPass: z.string().max(500).optional(),
       smtpFrom: z.string().max(320).nullable().optional(),
+      autoReportEnabled: z.boolean().optional(),
     })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const patch: Record<string, unknown> = {};
+      if (input.autoReportEnabled !== undefined) patch.autoReportEnabled = input.autoReportEnabled ? 1 : 0;
       if (input.reportTime !== undefined) patch.reportTime = input.reportTime;
       if (input.timezone !== undefined) patch.timezone = input.timezone;
       if (input.adminEmail !== undefined) patch.adminEmail = input.adminEmail;

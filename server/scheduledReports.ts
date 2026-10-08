@@ -69,10 +69,14 @@ export async function scheduledDailyReport(req: Request, res: Response) {
       context.taskUid = `manual:${user.id}`;
     }
     const report = await compileDailyReport();
+    const settings = await getAppSettings();
+    // Paused by admin: skip all report emails but keep the cron alive.
+    if (settings.autoReportEnabled === 0) {
+      return res.json({ ok: true, skipped: true, reason: "Daily auto-report is paused in Automation settings.", date: report.date });
+    }
     // Honor the admin-configured report time: the deployment cron fires daily, but if the
     // configured time is far from "now" in the configured timezone, skip the send so a
     // mistimed manual hit doesn't blast a duplicate report. "Run now" in the app bypasses this.
-    const settings = await getAppSettings();
     const nowParts = new Intl.DateTimeFormat("en-GB", { timeZone: settings.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date());
     const [nowH, nowM] = nowParts.split(":").map(Number);
     const [cfgH, cfgM] = settings.reportTime.split(":").map(Number);
