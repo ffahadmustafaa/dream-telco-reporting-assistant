@@ -91,7 +91,6 @@ import {
   type Region,
 } from "./db";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { sendSecurityEmail } from "./_core/authDelivery";
 import { compileDailyReport } from "./scheduledReports";
 import { deliverDailyReport, deliverReportTo, reportAutomationStatus, reportDeliveryConfig, sendRegistrationOtpEmail } from "./reportDelivery";
 import { analyzeOtp, fetchWhitenoiseSms, getWhitenoiseConfig, getWhitenoiseRoster, parseManualSmsLog, saveWhitenoiseCredentials, saveWhitenoiseRoster, wnRangeEnd, wnRangeStart, type WnSmsRecord } from "./whitenoise";
@@ -411,10 +410,22 @@ export const appRouter = router({
       const user = await getUser(input.userId);
       if (!user) throw new Error("Registration account not found");
       if (!user.email) throw new Error("No email address on this account");
+      // 15-minute resend cooldown: a fresh code can only be requested 15 minutes after the last one.
+      const latest = (await listAuthChallenges())
+        .filter(c => c.userId === input.userId && c.isCompleted === 0)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+      if (latest) {
+        const elapsedMs = Date.now() - new Date(latest.createdAt).getTime();
+        const cooldownMs = 15 * 60 * 1000;
+        if (elapsedMs < cooldownMs) {
+          const waitMin = Math.ceil((cooldownMs - elapsedMs) / 60000);
+          throw new Error(`A code was already sent. Please wait ${waitMin} minute${waitMin === 1 ? "" : "s"} before requesting a new one.`);
+        }
+      }
       const emailOtp = String(Math.floor(100000 + Math.random() * 900000));
       await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp: "", expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0 });
       await sendRegistrationOtpEmail(user.email, emailOtp);
-      return { expiresInMinutes: 10, message: "Verification code sent to your Gmail." };
+      return { expiresInMinutes: 10, resendAfterSeconds: 15 * 60, message: "Verification code sent to your Gmail." };
     }),
     verifyRegistrationOtp: publicProcedure.input(z.object({ userId: z.number(), emailOtp: z.string().length(6), remember: z.boolean().optional().default(false) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
@@ -453,21 +464,21 @@ export const appRouter = router({
       await setLocalSession(ctx, { openId: user.openId, name: user.name }, input.remember);
       return { success: true, redirect: user.role === "admin" ? "/" : "/daily", role: user.accountRole };
     }),
-    requestPasswordReset: publicProcedure.input(z.object({ identifier: z.string().min(3).max(320) })).mutation(async ({ input }) => {
+    requestPasswordReset: publicProcedure.input(z.object({ email: z.string().email().max(320) })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
-      const identifier = input.identifier.trim().toLowerCase();
-      const user = await getUserByIdentifier(identifier);
-      if (!user || !user.email) return { accepted: true, sandboxMode: true, resetCode: String(Math.floor(100000 + Math.random() * 900000)) }; // no account enumeration: same shape, dummy code never stored
+      const email = input.email.trim().toLowerCase();
+      const user = await getUserByEmail(email);
+      if (!user) throw new Error("Account doesn't exist");
       const resetCode = String(Math.floor(100000 + Math.random() * 900000));
       await insertOtpVerification({ identifier: `pwdreset:${user.id}`, otpCode: resetCode, expiresAt: new Date(Date.now() + 15 * 60 * 1000), isUsed: 0 });
-      const delivery = await sendSecurityEmail(user.email, "Dream Telco password reset", `Your password reset code is ${resetCode}. It expires in 15 minutes. If you didn't request this, ignore this email.`);
+      await sendRegistrationOtpEmail(email, resetCode);
       await addAuditLog({ action: "Password Reset Requested", userId: user.id, reason: "Forgot-password flow" });
-      return { accepted: true, sandboxMode: delivery.sandbox, resetCode: delivery.sandbox ? resetCode : "" };
+      return { accepted: true };
     }),
-    resetPassword: publicProcedure.input(z.object({ identifier: z.string().min(3).max(320), resetCode: z.string().length(6), newPassword: z.string().min(8).max(128) })).mutation(async ({ input }) => {
+    resetPassword: publicProcedure.input(z.object({ email: z.string().email().max(320), resetCode: z.string().length(6), newPassword: z.string().min(8).max(128) })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
-      const identifier = input.identifier.trim().toLowerCase();
-      const user = await getUserByIdentifier(identifier);
+      const email = input.email.trim().toLowerCase();
+      const user = await getUserByEmail(email);
       if (!user) throw new Error("Invalid or expired reset code");
       const match = (await listOtpVerifications()).find(item => item.identifier === `pwdreset:${user.id}` && item.otpCode === input.resetCode && item.isUsed === 0 && item.expiresAt > new Date());
       if (!match) throw new Error("Invalid or expired reset code");
