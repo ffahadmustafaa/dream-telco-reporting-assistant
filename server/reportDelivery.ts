@@ -102,6 +102,20 @@ export async function deliverReportTo(to: string, date: string, workbook: Buffer
   return { channel: notified ? "owner_notification" as const : "unconfigured" as const, recipient: to };
 }
 
+/** Send a registration OTP code via the automation SMTP settings. Throws when SMTP is not configured. */
+export async function sendRegistrationOtpEmail(to: string, otp: string): Promise<void> {
+  const delivery = await resolveReportDelivery();
+  if (!delivery.smtp) {
+    throw new Error("Email delivery is not configured. Ask the admin to set up SMTP under Automation.");
+  }
+  await sendViaSmtp(
+    delivery.smtp,
+    to,
+    "Dream Telco verification code",
+    `Your Dream Telco verification code is ${otp}. It expires in 10 minutes.\n\nIf you didn't request this, ignore this email.`,
+  );
+}
+
 export async function deliverDailyReport(date: string, workbook: Buffer, summary: string) {
   const delivery = await resolveReportDelivery();
   const subject = `Daily Operations & OTP Report - ${date}`;

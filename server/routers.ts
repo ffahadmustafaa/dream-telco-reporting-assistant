@@ -91,9 +91,9 @@ import {
   type Region,
 } from "./db";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { isSandboxAuth, sendDualOtp, sendSecurityEmail } from "./_core/authDelivery";
+import { sendSecurityEmail } from "./_core/authDelivery";
 import { compileDailyReport } from "./scheduledReports";
-import { deliverDailyReport, reportAutomationStatus, reportDeliveryConfig } from "./reportDelivery";
+import { deliverDailyReport, deliverReportTo, reportAutomationStatus, reportDeliveryConfig, sendRegistrationOtpEmail } from "./reportDelivery";
 import { analyzeOtp, fetchWhitenoiseSms, getWhitenoiseConfig, getWhitenoiseRoster, parseManualSmsLog, saveWhitenoiseCredentials, saveWhitenoiseRoster, wnRangeEnd, wnRangeStart, type WnSmsRecord } from "./whitenoise";
 import { answerWorkspaceQuestion, parseAssistantCommand, parseQuestionDateRange, type AssistantCommand, type WorkspaceSnapshot } from "./aiAssistant";
 import { answerDatasetQuestion, parseWorkbook, summarizeDataset } from "./aiDataset";
@@ -352,7 +352,16 @@ export const appRouter = router({
       ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
       return { success: true } as const;
     }),
-    register: publicProcedure.input(z.object({ name: z.string().min(2).max(100), email: z.string().email().max(320), phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international format, e.g. +923001234567"), password: z.string().min(8), role: z.enum(["tester", "team_leader"]).default("tester"), teamLeaderId: z.number().int().positive().nullable().optional(), newTeamLeaderName: z.string().min(2).max(160).optional(), inviteCode: z.string().min(4).max(32) })).mutation(async ({ input }) => {
+    register: publicProcedure.input(z.object({
+      name: z.string().min(3, "Name must be 3-20 characters").max(20, "Name must be 3-20 characters"),
+      email: z.string().email().max(320).refine(v => v.trim().toLowerCase().endsWith("@gmail.com"), "Only Gmail addresses are allowed"),
+      phoneNumber: z.string().regex(/^\+923\d{9}$/, "Use a valid Pakistani mobile, e.g. +923001234567"),
+      password: z.string().min(8),
+      role: z.enum(["tester", "team_leader"]).default("tester"),
+      teamLeaderId: z.number().int().positive().nullable().optional(),
+      newTeamLeaderName: z.string().min(3, "Name must be 3-20 characters").max(20, "Name must be 3-20 characters").optional(),
+      inviteCode: z.string().min(4).max(32),
+    })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const email = input.email.trim().toLowerCase(); const phoneNumber = input.phoneNumber.trim();
       if (await getUserByEmail(email)) throw new Error("That email is already registered");
@@ -401,18 +410,18 @@ export const appRouter = router({
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const user = await getUser(input.userId);
       if (!user) throw new Error("Registration account not found");
-      const emailOtp = isSandboxAuth ? "123456" : String(Math.floor(100000 + Math.random() * 900000));
-      const phoneOtp = isSandboxAuth ? "123456" : String(Math.floor(100000 + Math.random() * 900000));
-      await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp, expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0 });
-      await sendDualOtp(user.email ?? "", user.phoneNumber ?? "", emailOtp, phoneOtp);
-      return { sandboxMode: isSandboxAuth, emailOtp: isSandboxAuth ? emailOtp : "", phoneOtp: isSandboxAuth ? phoneOtp : "", expiresInMinutes: 10, message: isSandboxAuth ? "Sandbox mode: use the displayed test codes." : "Dual OTP sent to the registered email and phone." };
+      if (!user.email) throw new Error("No email address on this account");
+      const emailOtp = String(Math.floor(100000 + Math.random() * 900000));
+      await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp: "", expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0 });
+      await sendRegistrationOtpEmail(user.email, emailOtp);
+      return { expiresInMinutes: 10, message: "Verification code sent to your Gmail." };
     }),
-    verifyRegistrationOtp: publicProcedure.input(z.object({ userId: z.number(), emailOtp: z.string().length(6), phoneOtp: z.string().length(6), remember: z.boolean().optional().default(false) })).mutation(async ({ ctx, input }) => {
+    verifyRegistrationOtp: publicProcedure.input(z.object({ userId: z.number(), emailOtp: z.string().length(6), remember: z.boolean().optional().default(false) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const user = await getUser(input.userId);
       if (!user) throw new Error("Registration account not found");
-      const match = (await listAuthChallenges()).find(item => item.userId === input.userId && item.emailOtp === input.emailOtp && item.phoneOtp === input.phoneOtp && item.isCompleted === 0 && item.expiresAt > new Date());
-      if (!match) throw new Error("Both OTP codes must be correct and unexpired.");
+      const match = (await listAuthChallenges()).find(item => item.userId === input.userId && item.emailOtp === input.emailOtp && item.isCompleted === 0 && item.expiresAt > new Date());
+      if (!match) throw new Error("The verification code is incorrect or expired.");
       const isRootAdmin = user.email?.toLowerCase() === "ffahadmustafaa@gmail.com";
       await updateAuthChallenge(match.id, { isCompleted: 1 });
       await updateUser(user.id, { emailVerified: 1, phoneVerified: 1, isVerified: 1, accountStatus: "active", role: isRootAdmin ? "admin" : "user", accountRole: isRootAdmin ? "admin" : user.accountRole, lastSignedIn: new Date() });
@@ -432,7 +441,7 @@ export const appRouter = router({
       const user = await getUserByIdentifier(identifier);
       if (!user || !user.passwordHash || !verifyPassword(input.password, user.passwordHash)) throw new Error("Invalid email/phone or password");
       if (user.accountStatus === "blocked") throw new Error("This account is blocked");
-      if (!user.isVerified || !user.emailVerified || !user.phoneVerified) throw new Error("Verify both email and phone OTPs before signing in");
+      if (!user.isVerified || !user.emailVerified) throw new Error("Verify your email before signing in");
       await updateUser(user.id, { lastSignedIn: new Date() });
       if (user.accountRole === "team_leader") {
         const existingLeader = (await listTeamLeaders()).find(leader => cleanName(leader.name) === cleanName(user.name ?? ""));
