@@ -29,6 +29,7 @@ import {
   FileBarChart,
   FileSpreadsheet,
   Flag,
+  Globe,
   History,
   LayoutDashboard,
   LogOut,
@@ -65,11 +66,12 @@ const menuItems = [
     path: "/profile",
     testerOnly: true,
   },
-  { icon: Users, label: "Admin dashboard", path: "/admin", adminOnly: true },
-  { icon: Users, label: "User directory", path: "/users", adminOnly: true },
-  { icon: CalendarClock, label: "Automation", path: "/automation", adminOnly: true },
+  { icon: Users, label: "Admin dashboard", path: "/admin", staffOnly: true },
+  { icon: Users, label: "User directory", path: "/users", staffOnly: true },
+  { icon: CalendarClock, label: "Automation", path: "/automation", hqOnly: true },
+  { icon: Globe, label: "Regions & staff", path: "/regions", superOnly: true },
   {
-    icon: MessageSquare, label: "Whitenoise", adminOnly: true, rootAdminOnly: true,
+    icon: MessageSquare, label: "Whitenoise", superOnly: true,
     children: [
       { label: "OTP per number", path: "/whitenoise/otp" },
       { label: "App usage", path: "/whitenoise/apps" },
@@ -270,12 +272,17 @@ function DashboardLayoutContent({
       document.body.style.cursor = "";
     };
   }, [isResizing, isCollapsed, setSidebarWidth]);
+  const role = user?.accountRole;
+  const isSuper = role === "super_admin";
+  const isHq = role === "hq_admin" || isSuper;
+  const isManager = role === "manager" || isHq;
   const visibleMenuItems = menuItems.filter(
     item =>
-      (!item.adminOnly || user?.role === "admin") &&
-      (!item.rootAdminOnly || user?.accountRole === "admin") &&
-      (!item.leaderOnly || user?.accountRole === "team_leader" || user?.role === "admin") &&
-      (user?.accountRole !== "tester" ||
+      (!item.superOnly || isSuper) &&
+      (!item.hqOnly || isHq) &&
+      (!item.staffOnly || isManager) &&
+      (!item.leaderOnly || role === "team_leader" || isManager || user?.role === "admin") &&
+      (role !== "tester" ||
         item.testerOnly ||
         item.path === "/daily")
   );

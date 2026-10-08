@@ -7,6 +7,7 @@
  * collection/table names.
  */
 import { Timestamp } from "firebase-admin/firestore";
+import { randomBytes } from "crypto";
 import { getFirestoreDb } from "./firebase";
 
 // ---------------------------------------------------------------------------
@@ -21,9 +22,10 @@ export type User = {
   loginMethod: string | null;
   passwordHash: string | null;
   role: "user" | "admin";
-  accountRole: "admin" | "team_leader" | "tester";
+  accountRole: "super_admin" | "hq_admin" | "manager" | "admin" | "team_leader" | "tester";
   phoneNumber: string | null;
   teamLeaderId: number | null;
+  regionId: number | null;
   emailVerified: number;
   phoneVerified: number;
   isVerified: number;
@@ -79,6 +81,7 @@ export type TeamLeader = {
   id: number;
   name: string;
   status: "ACTIVE" | "INACTIVE";
+  regionId: number | null;
   dateAdded: Date;
   dateInactive: Date | null;
   notes: string | null;
@@ -90,11 +93,22 @@ export type Tester = {
   name: string;
   teamLeaderId: number;
   status: "ACTIVE" | "INACTIVE";
+  regionId: number | null;
   dateAdded: Date;
   dateInactive: Date | null;
   notes: string | null;
 };
 export type InsertTester = Partial<Omit<Tester, "id">> & { name: string; teamLeaderId: number };
+
+export type Region = {
+  id: number;
+  name: string;
+  code: string;
+  inviteCode: string;
+  status: "ACTIVE" | "INACTIVE";
+  createdAt: Date;
+};
+export type InsertRegion = Partial<Omit<Region, "id" | "createdAt">> & { name: string; code: string; inviteCode: string };
 
 export type Project = {
   id: number;
@@ -215,6 +229,7 @@ const COLLECTIONS = {
   authChallenges: "auth_challenges",
   teamLeaders: "team_leaders",
   testers: "testers",
+  regions: "regions",
   projects: "projects",
   targets: "targets",
   dailyPerformance: "daily_performance",
@@ -514,6 +529,43 @@ export async function updateTeamLeader(id: number, patch: Partial<TeamLeader>): 
 
 export async function deleteTeamLeader(id: number): Promise<void> {
   return deleteOne("teamLeaders", id);
+}
+
+// ---------------------------------------------------------------------------
+// Regions
+// ---------------------------------------------------------------------------
+
+/** Generate an unguessable region invite code, e.g. CTRL-A-7X2K9P. */
+export function generateInviteCode(regionCode: string): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = randomBytes(6);
+  let suffix = "";
+  for (let i = 0; i < 6; i++) suffix += alphabet[bytes[i]! % alphabet.length];
+  return `CTRL-${regionCode.toUpperCase()}-${suffix}`;
+}
+
+/** All regions, ordered by code. */
+export async function listRegions(): Promise<Region[]> {
+  const rows = await listAll<Region>("regions");
+  return rows.sort((a, b) => a.code.localeCompare(b.code));
+}
+
+export async function getRegion(id: number): Promise<Region | undefined> {
+  return getById<Region>("regions", id);
+}
+
+export async function getRegionByInviteCode(inviteCode: string): Promise<Region | undefined> {
+  const code = inviteCode.trim().toUpperCase();
+  const rows = await listAll<Region>("regions");
+  return rows.find(r => r.inviteCode.toUpperCase() === code && r.status === "ACTIVE");
+}
+
+export async function insertRegion(values: InsertRegion): Promise<number> {
+  return insertOne<Region>("regions", { status: "ACTIVE", ...values } as Record<string, unknown>);
+}
+
+export async function updateRegion(id: number, patch: Partial<Region>): Promise<void> {
+  return updateOne("regions", id, patch as Record<string, unknown>);
 }
 
 /** Find a team leader by name, or create + reactivate it when missing. */

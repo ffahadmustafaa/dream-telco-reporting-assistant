@@ -4,24 +4,30 @@ import {
   isDbConfigured,
   listActiveProjects,
   listPerformanceByDate,
+  listRegions,
   listTeamLeaders,
   listTesters,
+  listUsers,
   updateAppSettings,
 } from "./db";
 import { authenticateRequest } from "./_core/session";
-import { buildReportWorkbook, deliverDailyReport, type ReportRow } from "./reportDelivery";
+import { buildReportWorkbook, deliverDailyReport, deliverReportTo, type ReportRow } from "./reportDelivery";
 
 const karachiDate = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const toDate = (date: string) => new Date(`${date}T00:00:00.000Z`);
 
-export async function compileDailyReport(date = karachiDate()) {
+export async function compileDailyReport(date = karachiDate(), regionId?: number) {
   if (!isDbConfigured()) throw new Error("Database is unavailable");
-  const [projectRows, leaderRows, testerRows, performance] = await Promise.all([
+  const [projectRows, allLeaders, allTesters, performance] = await Promise.all([
     listActiveProjects(),
     listTeamLeaders(),
     listTesters(),
     listPerformanceByDate(toDate(date)),
   ]);
+  const leaderRows = regionId == null ? allLeaders : allLeaders.filter(l => l.regionId === regionId);
+  const testerRows = regionId == null ? allTesters : allTesters.filter(t => t.regionId === regionId);
+  const leaderIds = new Set(leaderRows.map(l => l.id));
+  const testerIds = new Set(testerRows.map(t => t.id));
   const projectsById = new Map(projectRows.map(project => [project.id, project.name]));
   const leadersById = new Map(leaderRows.map(leader => [leader.id, leader.name]));
   const totals = new Map<string, Map<string, number>>();
@@ -31,6 +37,7 @@ export async function compileDailyReport(date = karachiDate()) {
     totals.set(key, new Map());
   }
   for (const row of performance) {
+    if (!testerIds.has(row.testerId)) continue;
     const tester = testerRows.find(item => item.id === row.testerId);
     if (!tester) continue;
     const leader = leadersById.get(tester.teamLeaderId) ?? "Unassigned";
@@ -57,7 +64,8 @@ export async function scheduledDailyReport(req: Request, res: Response) {
     } else {
       // Fallback: an authenticated admin session may trigger the report manually.
       const user = await authenticateRequest(req);
-      if (user.accountRole !== "admin" && user.role !== "admin") return res.status(403).json({ error: "admin-only" });
+      const role = user.accountRole;
+      if (role !== "super_admin" && role !== "hq_admin" && role !== "admin" && user.role !== "admin") return res.status(403).json({ error: "admin-only" });
       context.taskUid = `manual:${user.id}`;
     }
     const report = await compileDailyReport();
@@ -74,8 +82,34 @@ export async function scheduledDailyReport(req: Request, res: Response) {
       return res.json({ ok: true, skipped: true, reason: `Configured report time is ${settings.reportTime} (${settings.timezone}); current time is ${nowParts}.`, date: report.date });
     }
     const delivery = await deliverDailyReport(report.date, report.workbook, report.summary);
+    // Per-region reports: each region manager gets their region's Excel.
+    // HQ admins and the super admin get the global report.
+    const [regions, users] = await Promise.all([listRegions(), listUsers()]);
+    const regionDeliveries: Array<{ region: string; recipient: string; channel: string }> = [];
+    for (const region of regions.filter(r => r.status === "ACTIVE")) {
+      const manager = users.find(u => u.accountRole === "manager" && u.regionId === region.id && u.accountStatus === "active" && u.email);
+      if (!manager?.email) continue;
+      try {
+        const regionReport = await compileDailyReport(report.date, region.id);
+        const result = await deliverReportTo(manager.email, report.date, regionReport.workbook, `${regionReport.summary}\n\nRegion: ${region.name}`, region.name);
+        regionDeliveries.push({ region: region.name, recipient: manager.email, channel: result.channel });
+      } catch (error) {
+        regionDeliveries.push({ region: region.name, recipient: manager.email, channel: `failed: ${error instanceof Error ? error.message : String(error)}` });
+      }
+    }
+    const globalRecipients = users.filter(u => (u.accountRole === "super_admin" || u.accountRole === "hq_admin") && u.accountStatus === "active" && u.email);
+    const globalDeliveries: Array<{ recipient: string; channel: string }> = [];
+    for (const recipient of globalRecipients) {
+      if (!recipient.email || recipient.email === delivery.recipient) continue;
+      try {
+        const result = await deliverReportTo(recipient.email, report.date, report.workbook, `${report.summary}\n\nGlobal report — all regions.`, undefined);
+        globalDeliveries.push({ recipient: recipient.email, channel: result.channel });
+      } catch (error) {
+        globalDeliveries.push({ recipient: recipient.email, channel: `failed: ${error instanceof Error ? error.message : String(error)}` });
+      }
+    }
     await updateAppSettings({ lastAutoReport: new Date().toISOString() });
-    return res.json({ ok: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery });
+    return res.json({ ok: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery, regionDeliveries, globalDeliveries });
   } catch (error) {
     return res.status(500).json({ error: String(error), stack: error instanceof Error ? error.stack : undefined, context, timestamp: new Date().toISOString() });
   }

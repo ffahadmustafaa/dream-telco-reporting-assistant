@@ -80,6 +80,28 @@ export function buildReportWorkbook(date: string, projects: string[], rows: Repo
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx", cellStyles: true }) as Buffer;
 }
 
+/** Send a report workbook to an explicit recipient (used for per-region manager reports). */
+export async function deliverReportTo(to: string, date: string, workbook: Buffer, summary: string, regionName?: string) {
+  const delivery = await resolveReportDelivery();
+  const subject = regionName ? `Daily Operations & OTP Report - ${regionName} - ${date}` : `Daily Operations & OTP Report - ${date}`;
+  const filename = regionName ? `Daily_Operations_Report_${regionName.replace(/\s+/g, "_")}_${date}.xlsx` : `Daily_Operations_Report_${date}.xlsx`;
+
+  if (delivery.smtp) {
+    await sendViaSmtp(delivery.smtp, to, subject, summary, { filename, content: workbook });
+    return { channel: "smtp" as const, recipient: to };
+  }
+
+  const provider = process.env.REPORT_EMAIL_PROVIDER?.toLowerCase();
+  const apiKey = process.env.REPORT_EMAIL_API_KEY;
+  if (provider === "resend" && apiKey) {
+    const response = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: envReportFrom, to: [to], subject, text: summary, attachments: [{ filename, content: workbook.toString("base64") }] }) });
+    if (!response.ok) throw new Error(`Report email provider failed (${response.status})`);
+    return { channel: "email" as const, recipient: to };
+  }
+  const notified = await notifyOwner({ title: subject, content: `${summary}\n\nEmail attachment delivery is not configured. Open the app as admin → Automation and add SMTP settings to enable direct email attachments.` });
+  return { channel: notified ? "owner_notification" as const : "unconfigured" as const, recipient: to };
+}
+
 export async function deliverDailyReport(date: string, workbook: Buffer, summary: string) {
   const delivery = await resolveReportDelivery();
   const subject = `Daily Operations & OTP Report - ${date}`;

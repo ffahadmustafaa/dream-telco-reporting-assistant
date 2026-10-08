@@ -2,7 +2,7 @@ import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { invokeLLM } from "./_core/llm";
-import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { adminProcedure, hqAdminProcedure, isHqLevel, isManagerLevel, isSuperAdmin, managerProcedure, protectedProcedure, publicProcedure, router, staffRegionScope, superAdminProcedure } from "./_core/trpc";
 import { createSessionToken } from "./_core/session";
 import {
   addAuditLog,
@@ -82,6 +82,13 @@ import {
   getTarget,
   updateTarget,
   deleteTarget,
+  listRegions,
+  getRegion,
+  getRegionByInviteCode,
+  insertRegion,
+  updateRegion,
+  generateInviteCode,
+  type Region,
 } from "./db";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { isSandboxAuth, sendDualOtp, sendSecurityEmail } from "./_core/authDelivery";
@@ -103,10 +110,37 @@ const verifyPassword = (password: string, stored: string) => { const [salt, hash
 const setLocalSession = async (ctx: { req: any; res: any }, user: { openId: string; name: string | null }, remember = false) => { const token = await createSessionToken(user.openId, { name: user.name ?? "Workspace user" }); ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), ...(remember ? { maxAge: 365 * 24 * 60 * 60 * 1000 } : {}) }); };
 const stripSecrets = (user: any) => { if (!user) return null; const { passwordHash: _passwordHash, ...safeUser } = user; return safeUser; };
 
+/**
+ * Resolve the region-scoped roster ids for a staff member.
+ * Returns null when the user has global access (super admin / HQ admin).
+ * Managers are restricted to their own region's leaders and testers.
+ */
+async function getRegionScope(user: { accountRole?: string | null; regionId?: number | null }): Promise<{ regionId: number; leaderIds: number[]; testerIds: number[] } | null> {
+  const regionId = staffRegionScope(user);
+  if (regionId === null) return null;
+  if (regionId < 0) return { regionId: -1, leaderIds: [], testerIds: [] };
+  const [leaders, testers] = await Promise.all([listTeamLeaders(), listTesters()]);
+  const leaderIds = leaders.filter(l => l.regionId === regionId).map(l => l.id);
+  const testerIds = testers.filter(t => t.regionId === regionId || leaderIds.includes(t.teamLeaderId)).map(t => t.id);
+  return { regionId, leaderIds, testerIds };
+}
+
+/** Filter workspace data to a region scope (null scope = global, no filtering). */
+function applyRegionScope<T extends { teamLeaderId?: number | null; testerId?: number | null }>(
+  scope: { leaderIds: number[]; testerIds: number[] } | null,
+  rows: T[],
+): T[] {
+  if (!scope) return rows;
+  return rows.filter(row =>
+    (row.testerId != null && scope.testerIds.includes(row.testerId)) ||
+    (row.teamLeaderId != null && scope.leaderIds.includes(row.teamLeaderId)),
+  );
+}
+
 type RosterTester = Tester;
 type RosterLeader = TeamLeader;
 type ProjectRecord = Project;
-type CommandUser = { id: number; name: string | null; accountRole: "admin" | "team_leader" | "tester"; isAdmin: boolean };
+type CommandUser = { id: number; name: string | null; accountRole: "super_admin" | "hq_admin" | "manager" | "admin" | "team_leader" | "tester"; isAdmin: boolean };
 type CommandData = { roster: RosterTester[]; leaderRows: RosterLeader[]; projectRows: ProjectRecord[]; reportDate: string; latest: string };
 
 /** Role-scoped snapshot for deterministic assistant Q&A. */
@@ -251,9 +285,14 @@ async function executeAssistantCommand(user: CommandUser, command: AssistantComm
 export const appRouter = router({
   system: router({ health: publicProcedure.query(() => ({ ok: true })) }),
   auth: router({
-    registrationTeamLeaders: publicProcedure.query(async () => {
+    registrationTeamLeaders: publicProcedure.input(z.object({ inviteCode: z.string().max(32).optional() }).optional()).query(async ({ input }) => {
       if (!isDbConfigured()) return [];
-      const [rosterLeaders, activeUsers] = await Promise.all([(await listTeamLeaders()).filter(leader => leader.status === "ACTIVE"), listUsers()]);
+      let regionId: number | null = null;
+      if (input?.inviteCode?.trim()) {
+        const region = await getRegionByInviteCode(input.inviteCode);
+        if (region) regionId = region.id;
+      }
+      const [rosterLeaders, activeUsers] = await Promise.all([(await listTeamLeaders()).filter(leader => leader.status === "ACTIVE" && (regionId === null || leader.regionId === null || leader.regionId === regionId)), listUsers()]);
       const names = new Set(rosterLeaders.map(leader => cleanName(leader.name)));
       const userNames = activeUsers.filter(user => user.accountRole === "team_leader" && user.accountStatus === "active" && user.name && !names.has(cleanName(user.name))).map(user => ({ id: user.id, name: user.name!, status: "ACTIVE" as const }));
       return [...rosterLeaders.map(leader => ({ id: leader.id, name: leader.name, status: leader.status })), ...userNames].sort((a, b) => a.name.localeCompare(b.name));
@@ -313,17 +352,23 @@ export const appRouter = router({
       ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
       return { success: true } as const;
     }),
-    register: publicProcedure.input(z.object({ name: z.string().min(2).max(100), email: z.string().email().max(320), phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international format, e.g. +923001234567"), password: z.string().min(8), role: z.enum(["tester", "team_leader"]).default("tester"), teamLeaderId: z.number().int().positive().nullable().optional(), newTeamLeaderName: z.string().min(2).max(160).optional() })).mutation(async ({ input }) => {
+    register: publicProcedure.input(z.object({ name: z.string().min(2).max(100), email: z.string().email().max(320), phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international format, e.g. +923001234567"), password: z.string().min(8), role: z.enum(["tester", "team_leader"]).default("tester"), teamLeaderId: z.number().int().positive().nullable().optional(), newTeamLeaderName: z.string().min(2).max(160).optional(), inviteCode: z.string().min(4).max(32) })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const email = input.email.trim().toLowerCase(); const phoneNumber = input.phoneNumber.trim();
       if (await getUserByEmail(email)) throw new Error("That email is already registered");
       if (await getUserByPhone(phoneNumber)) throw new Error("That phone number is already registered");
+      // Invite code assigns the region. Existing Central A members keep working without one.
+      const region = await getRegionByInviteCode(input.inviteCode);
+      if (!region) throw new Error("Invalid invite code. Ask your region manager for the correct code.");
+      const regionId = region.id;
       let teamLeaderId: number | undefined;
       if (input.role === "tester") {
         if (input.teamLeaderId) {
           const leader = await getTeamLeader(input.teamLeaderId);
           if (leader && leader.status === "ACTIVE") {
+            if (leader.regionId !== null && leader.regionId !== regionId) throw new Error("Selected Team Leader is not in your region");
             teamLeaderId = leader.id;
+            if (leader.regionId === null) await updateTeamLeader(leader.id, { regionId });
           } else {
             // The signup dropdown also lists team-leader login accounts (users
             // collection). Fall back to validating the user account, then link
@@ -339,13 +384,17 @@ export const appRouter = router({
           const duplicate = (await listTeamLeaders()).find(item => cleanName(item.name) === cleanName(leaderName));
           if (duplicate) {
             if (duplicate.status !== "ACTIVE") throw new Error("That Team Leader is not active");
+            if (duplicate.regionId !== null && duplicate.regionId !== regionId) throw new Error("That Team Leader is not in your region");
             teamLeaderId = duplicate.id;
+            if (duplicate.regionId === null) await updateTeamLeader(duplicate.id, { regionId });
           } else {
-            teamLeaderId = await insertTeamLeader({ name: leaderName, notes: `Added during registration by ${input.name.trim()}` });
+            teamLeaderId = await insertTeamLeader({ name: leaderName, regionId, notes: `Added during registration by ${input.name.trim()}` });
           }
         } else throw new Error("Select an active Team Leader for this Tester account, or add a new one");
+      } else if (input.role === "team_leader") {
+        // Team-leader registrations are linked to the invite-code region on approval.
       }
-      const userId = await insertUser({ openId: `local_${randomBytes(16).toString("hex")}`, name: input.name.trim(), email, phoneNumber, passwordHash: hashPassword(input.password), loginMethod: "local", role: "user", accountRole: email === "ffahadmustafaa@gmail.com" ? "admin" : input.role, teamLeaderId: teamLeaderId ?? null, accountStatus: "pending", isVerified: 0, emailVerified: 0, phoneVerified: 0 });
+      const userId = await insertUser({ openId: `local_${randomBytes(16).toString("hex")}`, name: input.name.trim(), email, phoneNumber, passwordHash: hashPassword(input.password), loginMethod: "local", role: "user", accountRole: email === "ffahadmustafaa@gmail.com" ? "super_admin" : input.role, teamLeaderId: teamLeaderId ?? null, regionId, accountStatus: "pending", isVerified: 0, emailVerified: 0, phoneVerified: 0 });
       return { userId, email, phoneNumber, sandboxMode: true };
     }),
     requestRegistrationOtp: publicProcedure.input(z.object({ userId: z.number() })).mutation(async ({ input }) => {
@@ -452,26 +501,28 @@ export const appRouter = router({
     }),
   }),
   userManagement: router({
-    directory: adminProcedure.query(async () => {
+    directory: managerProcedure.query(async ({ ctx }) => {
       if (!isDbConfigured()) return [];
       const [rows, leaders, sessions] = await Promise.all([listUsers(), listTeamLeaders(), listUserSessions()]);
-      return rows.map(user => { const { passwordHash: _passwordHash, ...safeUser } = user; return { ...safeUser, teamLeader: leaders.find(leader => leader.id === user.teamLeaderId)?.name ?? null, session: sessions.find(session => session.userId === user.id) ?? null }; });
+      const scope = await getRegionScope(ctx.user);
+      const visible = scope ? rows.filter(user => user.regionId === scope.regionId) : rows;
+      return visible.map(user => { const { passwordHash: _passwordHash, ...safeUser } = user; return { ...safeUser, teamLeader: leaders.find(leader => leader.id === user.teamLeaderId)?.name ?? null, session: sessions.find(session => session.userId === user.id) ?? null }; });
     }),
-    updateStatus: adminProcedure.input(z.object({ userId: z.number(), status: z.enum(["active", "pending", "blocked"]), isVerified: z.number().int().min(0).max(1).optional() })).mutation(async ({ ctx, input }) => {
+    updateStatus: hqAdminProcedure.input(z.object({ userId: z.number(), status: z.enum(["active", "pending", "blocked"]), isVerified: z.number().int().min(0).max(1).optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (input.userId === ctx.user.id && input.status === "blocked") throw new Error("You cannot block the current admin session");
       await updateUser(input.userId, { accountStatus: input.status, isVerified: input.isVerified ?? (input.status === "active" ? 1 : 0) });
       await addAuditLog({ action: "User Status Updated", userId: ctx.user.id, newValue: input, reason: "Admin moderation" });
       return { success: true };
     }),
-    updateRole: adminProcedure.input(z.object({ userId: z.number(), accountRole: z.enum(["admin", "team_leader", "tester"]), teamLeaderId: z.number().nullable().optional() })).mutation(async ({ ctx, input }) => {
+    updateRole: hqAdminProcedure.input(z.object({ userId: z.number(), accountRole: z.enum(["hq_admin", "manager", "admin", "team_leader", "tester"]), teamLeaderId: z.number().nullable().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (input.userId === ctx.user.id && input.accountRole !== "admin") throw new Error("The owner admin role cannot be removed from the current session");
       await updateUser(input.userId, { accountRole: input.accountRole, teamLeaderId: input.accountRole === "tester" ? input.teamLeaderId ?? null : null });
       await addAuditLog({ action: "User Role Updated", userId: ctx.user.id, newValue: input, reason: "Admin role assignment" });
       return { success: true };
     }),
-    delete: adminProcedure.input(z.object({ userId: z.number() })).mutation(async ({ ctx, input }) => {
+    delete: hqAdminProcedure.input(z.object({ userId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       if (input.userId === ctx.user.id) throw new Error("You cannot delete the current admin session");
       const old = await getUser(input.userId);
@@ -481,25 +532,114 @@ export const appRouter = router({
       return { success: true };
     }),
   }),
+  regions: router({
+    list: superAdminProcedure.query(async () => {
+      if (!isDbConfigured()) return [];
+      const [regions, leaders, testers, users] = await Promise.all([listRegions(), listTeamLeaders(), listTesters(), listUsers()]);
+      return regions.map(region => ({
+        ...region,
+        teamLeaderCount: leaders.filter(l => l.regionId === region.id).length,
+        testerCount: testers.filter(t => t.regionId === region.id).length,
+        manager: users.find(u => u.accountRole === "manager" && u.regionId === region.id) ?? null,
+      }));
+    }),
+    create: superAdminProcedure.input(z.object({ name: z.string().min(2).max(60), code: z.string().min(1).max(8) })).mutation(async ({ ctx, input }) => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const code = input.code.trim().toUpperCase();
+      const existing = await listRegions();
+      if (existing.some(r => r.code.toUpperCase() === code)) throw new Error("A region with this code already exists");
+      const id = await insertRegion({ name: input.name.trim(), code, inviteCode: generateInviteCode(code) });
+      await addAuditLog({ action: "Region Created", userId: ctx.user.id, newValue: { name: input.name.trim(), code } });
+      return { id };
+    }),
+    regenerateInviteCode: superAdminProcedure.input(z.object({ regionId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const region = await getRegion(input.regionId);
+      if (!region) throw new Error("Region not found");
+      const inviteCode = generateInviteCode(region.code);
+      await updateRegion(input.regionId, { inviteCode });
+      await addAuditLog({ action: "Region Invite Code Regenerated", userId: ctx.user.id, newValue: { regionId: input.regionId, code: region.code } });
+      return { inviteCode };
+    }),
+    toggleStatus: superAdminProcedure.input(z.object({ regionId: z.number().int().positive(), status: z.enum(["ACTIVE", "INACTIVE"]) })).mutation(async ({ ctx, input }) => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      await updateRegion(input.regionId, { status: input.status });
+      await addAuditLog({ action: input.status === "ACTIVE" ? "Region Activated" : "Region Deactivated", userId: ctx.user.id, newValue: input });
+      return { success: true };
+    }),
+  }),
+  staff: router({
+    /** Managers and HQ admins visible to the caller (managers see peers in own region only via directory). */
+    list: hqAdminProcedure.query(async () => {
+      if (!isDbConfigured()) return [];
+      const [users, regions] = await Promise.all([listUsers(), listRegions()]);
+      return users
+        .filter(u => u.accountRole === "hq_admin" || u.accountRole === "manager" || u.accountRole === "super_admin")
+        .map(u => { const { passwordHash: _p, ...safe } = u; return { ...safe, region: regions.find(r => r.id === u.regionId) ?? null }; });
+    }),
+    createHqAdmin: superAdminProcedure.input(z.object({
+      name: z.string().min(2).max(100),
+      email: z.string().email().max(320),
+      phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international format, e.g. +923001234567"),
+      password: z.string().min(8).max(128),
+    })).mutation(async ({ ctx, input }) => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const email = input.email.trim().toLowerCase();
+      if (await getUserByEmail(email)) throw new Error("That email is already registered");
+      if (await getUserByPhone(input.phoneNumber.trim())) throw new Error("That phone number is already registered");
+      const userId = await insertUser({
+        openId: `local_${randomBytes(16).toString("hex")}`,
+        name: input.name.trim(), email, phoneNumber: input.phoneNumber.trim(),
+        passwordHash: hashPassword(input.password), loginMethod: "local",
+        role: "admin", accountRole: "hq_admin", teamLeaderId: null, regionId: null,
+        accountStatus: "active", isVerified: 1, emailVerified: 1, phoneVerified: 1,
+      });
+      await addAuditLog({ action: "HQ Admin Created", userId: ctx.user.id, newValue: { userId, email } });
+      return { userId };
+    }),
+    createManager: hqAdminProcedure.input(z.object({
+      name: z.string().min(2).max(100),
+      email: z.string().email().max(320),
+      phoneNumber: z.string().regex(/^\+[1-9]\d{7,14}$/, "Use international format, e.g. +923001234567"),
+      password: z.string().min(8).max(128),
+      regionId: z.number().int().positive(),
+    })).mutation(async ({ ctx, input }) => {
+      if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const region = await getRegion(input.regionId);
+      if (!region || region.status !== "ACTIVE") throw new Error("Region is not active");
+      const email = input.email.trim().toLowerCase();
+      if (await getUserByEmail(email)) throw new Error("That email is already registered");
+      if (await getUserByPhone(input.phoneNumber.trim())) throw new Error("That phone number is already registered");
+      const userId = await insertUser({
+        openId: `local_${randomBytes(16).toString("hex")}`,
+        name: input.name.trim(), email, phoneNumber: input.phoneNumber.trim(),
+        passwordHash: hashPassword(input.password), loginMethod: "local",
+        role: "admin", accountRole: "manager", teamLeaderId: null, regionId: input.regionId,
+        accountStatus: "active", isVerified: 1, emailVerified: 1, phoneVerified: 1,
+      });
+      await addAuditLog({ action: "Manager Created", userId: ctx.user.id, newValue: { userId, email, regionId: input.regionId } });
+      return { userId };
+    }),
+  }),
   whitenoise: router({
-    getConfig: adminProcedure.query(async () => {
+    getConfig: superAdminProcedure.query(async () => {
       const config = await getWhitenoiseConfig();
       const roster = await getWhitenoiseRoster();
       return { email: config.email, hasPassword: config.hasPassword, rosterCount: roster.length };
     }),
-    saveCredentials: adminProcedure.input(z.object({ email: z.string().email().max(320), password: z.string().min(1).max(256) })).mutation(async ({ input }) => {
+    saveCredentials: superAdminProcedure.input(z.object({ email: z.string().email().max(320), password: z.string().min(1).max(256) })).mutation(async ({ input }) => {
       await saveWhitenoiseCredentials(input.email, input.password);
       return { success: true } as const;
     }),
-    getRoster: adminProcedure.query(async () => getWhitenoiseRoster()),
-    saveRoster: adminProcedure.input(z.object({ rows: z.array(z.object({ tester: z.string().max(160), teamLeader: z.string().max(160), number: z.string().max(32) })).max(2000) })).mutation(async ({ input }) => {
+    getRoster: superAdminProcedure.query(async () => getWhitenoiseRoster()),
+    saveRoster: superAdminProcedure.input(z.object({ rows: z.array(z.object({ tester: z.string().max(160), teamLeader: z.string().max(160), number: z.string().max(32) })).max(2000) })).mutation(async ({ input }) => {
       return saveWhitenoiseRoster(input.rows);
     }),
     /**
      * Run an OTP check. Uses saved credentials + roster unless overridden.
      * Set manualSmsRows to bypass whitenoise auto-fetch (fallback).
      */
-    check: adminProcedure.input(z.object({
+    check: superAdminProcedure.input(z.object({
       dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       roster: z.array(z.object({ tester: z.string().max(160), teamLeader: z.string().max(160), number: z.string().max(32) })).max(2000).optional(),
@@ -531,28 +671,35 @@ export const appRouter = router({
     }),
   }),
   adminDashboard: router({
-    reportDelivery: adminProcedure.query(() => reportDeliveryConfig()),
-    sendTestReport: adminProcedure.mutation(async () => { const report = await compileDailyReport(); const delivery = await deliverDailyReport(report.date, report.workbook, `${report.summary}\n\nThis was a manual test dispatch from the Admin Dashboard.`); return { success: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery }; }),
-    exportReport: adminProcedure.mutation(async () => { const report = await compileDailyReport(); return { fileName: `Daily_Operations_Report_${report.date}.xlsx`, contentBase64: report.workbook.toString("base64"), date: report.date, rows: report.rows.length, grandTotal: report.grandTotal }; }),
-    summary: adminProcedure.query(async () => {
+    reportDelivery: hqAdminProcedure.query(() => reportDeliveryConfig()),
+    sendTestReport: hqAdminProcedure.mutation(async () => { const report = await compileDailyReport(); const delivery = await deliverDailyReport(report.date, report.workbook, `${report.summary}\n\nThis was a manual test dispatch from the Admin Dashboard.`); return { success: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery }; }),
+    exportReport: hqAdminProcedure.mutation(async () => { const report = await compileDailyReport(); return { fileName: `Daily_Operations_Report_${report.date}.xlsx`, contentBase64: report.workbook.toString("base64"), date: report.date, rows: report.rows.length, grandTotal: report.grandTotal }; }),
+    summary: managerProcedure.query(async ({ ctx }) => {
       if (!isDbConfigured()) return { users: [], payouts: [], metrics: { totalUsers: 0, pendingUsers: 0, activeUsers: 0, blockedUsers: 0, pendingPayouts: 0, approvedPayouts: 0, paidPayouts: 0, payoutValue: 0 } };
       const [userRows, payoutRows] = await Promise.all([listUsers(), listPayouts(200)]);
-      const safeUsers = userRows.map(user => { const { passwordHash: _passwordHash, ...safeUser } = user; return safeUser; });
-      const metrics = { totalUsers: safeUsers.length, pendingUsers: safeUsers.filter(user => user.accountStatus === "pending").length, activeUsers: safeUsers.filter(user => user.accountStatus === "active").length, blockedUsers: safeUsers.filter(user => user.accountStatus === "blocked").length, pendingPayouts: payoutRows.filter(row => row.reviewStatus === "PENDING").length, approvedPayouts: payoutRows.filter(row => row.reviewStatus === "APPROVED").length, paidPayouts: payoutRows.filter(row => row.reviewStatus === "PAID").length, payoutValue: payoutRows.filter(row => row.reviewStatus !== "REJECTED").reduce((sum, row) => sum + money(row.netPayout), 0) };
-      return { users: safeUsers, payouts: payoutRows, metrics };
+      const scope = await getRegionScope(ctx.user);
+      const users = scope ? userRows.filter(u => u.regionId === scope.regionId) : userRows;
+      const payouts = scope ? payoutRows.filter(p => (p.testerId != null && scope.testerIds.includes(p.testerId)) || (p.teamLeaderId != null && scope.leaderIds.includes(p.teamLeaderId))) : payoutRows;
+      const safeUsers = users.map(user => { const { passwordHash: _passwordHash, ...safeUser } = user; return safeUser; });
+      const metrics = { totalUsers: safeUsers.length, pendingUsers: safeUsers.filter(user => user.accountStatus === "pending").length, activeUsers: safeUsers.filter(user => user.accountStatus === "active").length, blockedUsers: safeUsers.filter(user => user.accountStatus === "blocked").length, pendingPayouts: payouts.filter(row => row.reviewStatus === "PENDING").length, approvedPayouts: payouts.filter(row => row.reviewStatus === "APPROVED").length, paidPayouts: payouts.filter(row => row.reviewStatus === "PAID").length, payoutValue: payouts.filter(row => row.reviewStatus !== "REJECTED").reduce((sum, row) => sum + money(row.netPayout), 0) };
+      return { users: safeUsers, payouts, metrics };
     }),
-    approveUser: adminProcedure.input(z.object({ userId: z.number() })).mutation(async ({ ctx, input }) => {
+    approveUser: managerProcedure.input(z.object({ userId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const target = await getUser(input.userId);
       if (!target) throw new Error("User not found");
+      const scope = await getRegionScope(ctx.user);
+      if (scope && target.regionId !== scope.regionId) throw new Error("User is not in your region");
       await updateUser(input.userId, { accountStatus: "active", isVerified: 1 });
-      await addAuditLog({ action: "User Approved", userId: ctx.user.id, newValue: { userId: input.userId, email: target.email }, reason: "Admin approval" });
+      await addAuditLog({ action: "User Approved", userId: ctx.user.id, newValue: { userId: input.userId, email: target.email }, reason: "Staff approval" });
       return { success: true };
     }),
-    reviewPayout: adminProcedure.input(z.object({ payoutId: z.number(), reviewStatus: z.enum(["PENDING", "APPROVED", "REJECTED", "PAID"]) })).mutation(async ({ ctx, input }) => {
+    reviewPayout: managerProcedure.input(z.object({ payoutId: z.number(), reviewStatus: z.enum(["PENDING", "APPROVED", "REJECTED", "PAID"]) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const target = await getPayout(input.payoutId);
       if (!target) throw new Error("Payout record not found");
+      const scope = await getRegionScope(ctx.user);
+      if (scope && !((target.testerId != null && scope.testerIds.includes(target.testerId)) || (target.teamLeaderId != null && scope.leaderIds.includes(target.teamLeaderId)))) throw new Error("Payout is not in your region");
       if (input.reviewStatus === "APPROVED" && target.status !== "MATCHED") throw new Error("Only matched payout records can be approved");
       await updatePayout(input.payoutId, { reviewStatus: input.reviewStatus });
       await addAuditLog({ action: "Payout Review Updated", userId: ctx.user.id, oldValue: { reviewStatus: target.reviewStatus }, newValue: input, reason: "Admin payout control" });
@@ -563,7 +710,11 @@ export const appRouter = router({
     overview: protectedProcedure.input(z.object({ date: dateInput })).query(async ({ ctx, input }) => {
       await ensureWorkspaceInitialized(ctx.user.id);
       let data = await getWorkspaceData(toDate(input.date));
-      if (ctx.user.role !== "admin") {
+      const isManager = ctx.user.accountRole === "manager";
+      const regionScope = isManager ? await getRegionScope(ctx.user) : null;
+      if (regionScope) {
+        data = { ...data, leaders: data.leaders.filter(leader => regionScope.leaderIds.includes(leader.id)), testers: data.testers.filter(tester => regionScope.testerIds.includes(tester.id)), performance: data.performance.filter(row => regionScope.testerIds.includes(row.testerId)), targets: data.targets.filter(row => (row.testerId != null && regionScope.testerIds.includes(row.testerId)) || (row.teamLeaderId != null && regionScope.leaderIds.includes(row.teamLeaderId))), payouts: data.payouts.filter(row => (row.testerId != null && regionScope.testerIds.includes(row.testerId)) || (row.teamLeaderId != null && regionScope.leaderIds.includes(row.teamLeaderId))) };
+      } else if (ctx.user.role !== "admin" && !isHqLevel(ctx.user)) {
         const ownName = cleanName(ctx.user.name ?? "");
         const ownLeaderIds = data.leaders.filter(leader => ctx.user.accountRole === "team_leader" && cleanName(leader.name) === ownName).map(leader => leader.id);
         const allowedTesterIds = data.testers.filter(tester => ctx.user.accountRole === "team_leader" ? ownLeaderIds.includes(tester.teamLeaderId) : cleanName(tester.name) === ownName).map(tester => tester.id);
@@ -598,42 +749,58 @@ export const appRouter = router({
       if (!isDbConfigured()) return { leaders: [], testers: [] };
       const leaderRows = await listTeamLeaders(); const testerRows = await listTesters();
       if (ctx.user.accountRole === "team_leader") { const own = leaderRows.find(leader => cleanName(leader.name) === cleanName(ctx.user.name ?? "")); if (!own) return { leaders: [], testers: [] }; return { leaders: [own], testers: testerRows.filter(tester => tester.teamLeaderId === own.id) }; }
+      if (ctx.user.accountRole === "manager") { const scope = await getRegionScope(ctx.user); if (!scope) return { leaders: [], testers: [] }; return { leaders: leaderRows.filter(l => scope.leaderIds.includes(l.id)), testers: testerRows.filter(t => scope.testerIds.includes(t.id)) }; }
       return { leaders: leaderRows, testers: testerRows };
     }),
-    addLeader: adminProcedure.input(z.object({ name: z.string().min(2), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+    addLeader: managerProcedure.input(z.object({ name: z.string().min(2), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
-      const id = await insertTeamLeader({ name: input.name.trim(), status: "ACTIVE", notes: input.notes ?? null });
-      await addAuditLog({ action: "Team Leader Added", userId: ctx.user.id, newValue: input });
+      const scope = await getRegionScope(ctx.user);
+      const regionId = scope ? scope.regionId : (await listRegions()).find(r => r.code === "A")?.id ?? null;
+      const id = await insertTeamLeader({ name: input.name.trim(), status: "ACTIVE", regionId, notes: input.notes ?? null });
+      await addAuditLog({ action: "Team Leader Added", userId: ctx.user.id, newValue: { ...input, regionId } });
       return { id };
     }),
-    addTester: adminProcedure.input(z.object({ name: z.string().min(2), teamLeaderId: z.number(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+    addTester: managerProcedure.input(z.object({ name: z.string().min(2), teamLeaderId: z.number(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const scope = await getRegionScope(ctx.user);
+      if (scope && !scope.leaderIds.includes(input.teamLeaderId)) throw new Error("Team Leader is not in your region");
+      const leader = await getTeamLeader(input.teamLeaderId);
       const name = input.name.trim();
       const existing = (await listTesters()).find(item => cleanName(item.name) === cleanName(name));
       if (existing) {
-        await updateTester(existing.id, { teamLeaderId: input.teamLeaderId, status: "ACTIVE", notes: input.notes ?? null });
+        if (scope && existing.regionId !== scope.regionId && !scope.leaderIds.includes(existing.teamLeaderId)) throw new Error("Tester is not in your region");
+        await updateTester(existing.id, { teamLeaderId: input.teamLeaderId, status: "ACTIVE", regionId: leader?.regionId ?? scope?.regionId ?? null, notes: input.notes ?? null });
         await addAuditLog({ action: "Tester Reassigned", userId: ctx.user.id, oldValue: existing, newValue: input });
         return { id: existing.id };
       }
-      const id = await insertTester({ name, teamLeaderId: input.teamLeaderId, status: "ACTIVE", notes: input.notes ?? null });
+      const id = await insertTester({ name, teamLeaderId: input.teamLeaderId, status: "ACTIVE", regionId: leader?.regionId ?? scope?.regionId ?? null, notes: input.notes ?? null });
       await addAuditLog({ action: "Tester Added", userId: ctx.user.id, newValue: input });
       return { id };
     }),
-    moveTester: adminProcedure.input(z.object({ testerId: z.number(), teamLeaderId: z.number() })).mutation(async ({ ctx, input }) => {
+    moveTester: managerProcedure.input(z.object({ testerId: z.number(), teamLeaderId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const scope = await getRegionScope(ctx.user);
+      const target = await getTester(input.testerId);
+      if (!target) throw new Error("Tester not found");
+      if (scope && !scope.testerIds.includes(input.testerId)) throw new Error("Tester is not in your region");
+      if (scope && !scope.leaderIds.includes(input.teamLeaderId)) throw new Error("Team Leader is not in your region");
       const old = await getTester(input.testerId);
       await updateTester(input.testerId, { teamLeaderId: input.teamLeaderId });
       await addAuditLog({ action: "Tester Moved", userId: ctx.user.id, oldValue: old, newValue: input });
       return { success: true };
     }),
-    toggleTester: adminProcedure.input(z.object({ testerId: z.number(), status: z.enum(["ACTIVE", "INACTIVE"]) })).mutation(async ({ ctx, input }) => {
+    toggleTester: managerProcedure.input(z.object({ testerId: z.number(), status: z.enum(["ACTIVE", "INACTIVE"]) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const scope = await getRegionScope(ctx.user);
+      if (scope && !scope.testerIds.includes(input.testerId)) throw new Error("Tester is not in your region");
       await updateTester(input.testerId, { status: input.status, dateInactive: input.status === "INACTIVE" ? new Date() : null });
       await addAuditLog({ action: input.status === "ACTIVE" ? "Tester Reactivated" : "Tester Deactivated", userId: ctx.user.id, newValue: input });
       return { success: true };
     }),
-    deleteTester: adminProcedure.input(z.object({ testerId: z.number() })).mutation(async ({ ctx, input }) => {
+    deleteTester: managerProcedure.input(z.object({ testerId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const scope = await getRegionScope(ctx.user);
+      if (scope && !scope.testerIds.includes(input.testerId)) throw new Error("Tester is not in your region");
       const old = await getTester(input.testerId);
       if (!old) throw new Error("Tester not found");
       await deletePerformanceByTester(input.testerId);
@@ -673,8 +840,10 @@ export const appRouter = router({
       await addAuditLog({ action: "Tester Updated (Leader)", userId: ctx.user.id, oldValue: { id: target.id, name: target.name, status: target.status }, newValue: input });
       return { success: true };
     }),
-    deleteLeader: adminProcedure.input(z.object({ teamLeaderId: z.number() })).mutation(async ({ ctx, input }) => {
+    deleteLeader: managerProcedure.input(z.object({ teamLeaderId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
+      const scope = await getRegionScope(ctx.user);
+      if (scope && !scope.leaderIds.includes(input.teamLeaderId)) throw new Error("Team Leader is not in your region");
       const old = await getTeamLeader(input.teamLeaderId);
       if (!old) throw new Error("Team Leader not found");
       const children = (await listTesters()).filter(tester => tester.teamLeaderId === input.teamLeaderId);
@@ -693,19 +862,19 @@ export const appRouter = router({
   }),
   projects: router({
     list: protectedProcedure.query(async () => { if (!isDbConfigured()) return []; return listProjects(); }),
-    add: adminProcedure.input(z.object({ name: z.string().min(1), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+    add: hqAdminProcedure.input(z.object({ name: z.string().min(1), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const id = await insertProject({ name: input.name.trim(), notes: input.notes ?? null });
       await addAuditLog({ action: "Project Added", userId: ctx.user.id, newValue: input });
       return { id };
     }),
-    rename: adminProcedure.input(z.object({ projectId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    rename: hqAdminProcedure.input(z.object({ projectId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       await updateProject(input.projectId, { name: input.name.trim() });
       await addAuditLog({ action: "Project Renamed", userId: ctx.user.id, newValue: input });
       return { success: true };
     }),
-    delete: adminProcedure.input(z.object({ projectId: z.number() })).mutation(async ({ ctx, input }) => {
+    delete: hqAdminProcedure.input(z.object({ projectId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const used = await listPerformanceByProject(input.projectId, 1);
       if (used.length) throw new Error("Project has report data and cannot be deleted; rename it instead.");
@@ -716,7 +885,7 @@ export const appRouter = router({
   }),
   payoutRules: router({
     list: protectedProcedure.query(async () => { if (!isDbConfigured()) return []; return listActivePayoutRules(); }),
-    upsert: adminProcedure.input(z.object({ projectId: z.number(), testerId: z.number().optional(), ratePerOtp: z.number().nonnegative().optional(), fixedAmount: z.number().nonnegative().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+    upsert: hqAdminProcedure.input(z.object({ projectId: z.number(), testerId: z.number().optional(), ratePerOtp: z.number().nonnegative().optional(), fixedAmount: z.number().nonnegative().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const existing = (await listPayoutRules()).find(rule => rule.projectId === input.projectId && rule.testerId === input.testerId && rule.status === "ACTIVE");
       if (existing) await updatePayoutRule(existing.id, { ratePerOtp: input.ratePerOtp, fixedAmount: input.fixedAmount, notes: input.notes });
@@ -747,22 +916,36 @@ export const appRouter = router({
     }),
     teamHistory: protectedProcedure.query(async ({ ctx }) => {
       if (!isDbConfigured()) return [];
-      if (ctx.user.accountRole !== "team_leader") throw new Error("Only team leaders can view team history");
-      const leader = (await listTeamLeaders()).find(item => cleanName(item.name) === cleanName(ctx.user.name ?? ""));
-      if (!leader) return [];
-      const testers = (await listTesters()).filter(tester => tester.teamLeaderId === leader.id);
+      const role = ctx.user.accountRole;
+      if (role !== "team_leader" && role !== "manager" && !isHqLevel(ctx.user)) throw new Error("Only team leaders and managers can view team history");
+      const allLeaders = await listTeamLeaders();
+      const allTesters = await listTesters();
+      let leaders = allLeaders;
+      if (role === "team_leader") {
+        const own = allLeaders.find(item => cleanName(item.name) === cleanName(ctx.user.name ?? ""));
+        if (!own) return [];
+        leaders = [own];
+      } else if (role === "manager") {
+        const scope = await getRegionScope(ctx.user);
+        if (!scope) return [];
+        leaders = allLeaders.filter(l => scope.leaderIds.includes(l.id));
+      }
       const projectRows = await listProjects();
       const projectName = (id: number) => projectRows.find(project => project.id === id)?.name ?? "Unknown";
       const groups = [];
-      for (const tester of testers) {
-        const rows = await listPerformanceByTester(tester.id, 200);
-        groups.push({
-          testerId: tester.id,
-          testerName: tester.name,
-          status: tester.status,
-          total: rows.reduce((sum, row) => sum + Number(row.quantity), 0),
-          records: rows.map(row => ({ id: row.id, businessDate: row.businessDate, project: projectName(row.projectId), quantity: Number(row.quantity), source: row.source ?? null })),
-        });
+      for (const leader of leaders) {
+        const testers = allTesters.filter(tester => tester.teamLeaderId === leader.id);
+        for (const tester of testers) {
+          const rows = await listPerformanceByTester(tester.id, 200);
+          groups.push({
+            testerId: tester.id,
+            testerName: tester.name,
+            teamLeader: leader.name,
+            status: tester.status,
+            total: rows.reduce((sum, row) => sum + Number(row.quantity), 0),
+            records: rows.map(row => ({ id: row.id, businessDate: row.businessDate, project: projectName(row.projectId), quantity: Number(row.quantity), source: row.source ?? null })),
+          });
+        }
       }
       return groups;
     }),
@@ -777,6 +960,10 @@ export const appRouter = router({
         const assignedLeader = await getTeamLeader(tester.teamLeaderId);
         if (!assignedLeader || cleanName(assignedLeader.name) !== cleanName(ctx.user.name ?? "")) throw new Error("Team Leaders can only submit for their assigned team");
       }
+      if (ctx.user.accountRole === "manager") {
+        const scope = await getRegionScope(ctx.user);
+        if (!scope || !scope.testerIds.includes(input.testerId)) throw new Error("Tester is not in your region");
+      }
       const date = toDate(input.businessDate);
       const existing = await findPerformance(date, input.testerId, input.projectId);
       if (existing) await updatePerformance(existing.id, { teamLeaderId: tester.teamLeaderId, quantity: money(existing.quantity) + normalizedQuantity, source: input.source, notes: input.notes });
@@ -789,27 +976,36 @@ export const appRouter = router({
     list: protectedProcedure.query(async ({ ctx }) => {
       if (!isDbConfigured()) return [];
       const rows = await listPayouts();
-      if (ctx.user.role === "admin") return rows;
+      if (isHqLevel(ctx.user)) return rows;
+      if (ctx.user.accountRole === "manager") {
+        const scope = await getRegionScope(ctx.user);
+        if (!scope) return [];
+        return rows.filter(row => (row.testerId != null && scope.testerIds.includes(row.testerId)) || (row.teamLeaderId != null && scope.leaderIds.includes(row.teamLeaderId)));
+      }
       const [visible, leaders] = await Promise.all([listTesters(), listTeamLeaders()]);
       const ids = visible.filter(tester => ctx.user.accountRole === "team_leader" ? cleanName(leaders.find(leader => leader.id === tester.teamLeaderId)?.name ?? "") === cleanName(ctx.user.name ?? "") : cleanName(tester.name) === cleanName(ctx.user.name ?? "")).map(tester => tester.id);
       return rows.filter(row => row.testerId != null && ids.includes(row.testerId));
     }),
-    update: adminProcedure.input(z.object({ payoutId: z.number(), netPayout: z.number().nonnegative(), grossPayout: z.number().nonnegative().optional(), deductions: z.number().nonnegative().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+    update: managerProcedure.input(z.object({ payoutId: z.number(), netPayout: z.number().nonnegative(), grossPayout: z.number().nonnegative().optional(), deductions: z.number().nonnegative().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const old = await getPayout(input.payoutId);
       if (!old) throw new Error("Payout record not found");
+      const scope = await getRegionScope(ctx.user);
+      if (scope && !((old.testerId != null && scope.testerIds.includes(old.testerId)) || (old.teamLeaderId != null && scope.leaderIds.includes(old.teamLeaderId)))) throw new Error("Payout is not in your region");
       const gross = input.grossPayout ?? input.netPayout + (input.deductions ?? old.deductions);
       const deductions = input.deductions ?? old.deductions;
       await updatePayout(input.payoutId, { grossPayout: gross, deductions, netPayout: input.netPayout, notes: input.notes ?? old.notes });
-      await addAuditLog({ action: "Payout Overridden", userId: ctx.user.id, oldValue: old, newValue: input, reason: "Root admin payout override" });
+      await addAuditLog({ action: "Payout Overridden", userId: ctx.user.id, oldValue: old, newValue: input, reason: "Payout override" });
       return { success: true };
     }),
-    delete: adminProcedure.input(z.object({ payoutId: z.number() })).mutation(async ({ ctx, input }) => {
+    delete: managerProcedure.input(z.object({ payoutId: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const old = await getPayout(input.payoutId);
       if (!old) throw new Error("Payout record not found");
+      const scope = await getRegionScope(ctx.user);
+      if (scope && !((old.testerId != null && scope.testerIds.includes(old.testerId)) || (old.teamLeaderId != null && scope.leaderIds.includes(old.teamLeaderId)))) throw new Error("Payout is not in your region");
       await deletePayout(input.payoutId);
-      await addAuditLog({ action: "Payout Deleted", userId: ctx.user.id, oldValue: old, reason: "Root admin payout override" });
+      await addAuditLog({ action: "Payout Deleted", userId: ctx.user.id, oldValue: old, reason: "Payout override" });
       return { success: true };
     }),
     importText: protectedProcedure.input(z.object({ fileName: z.string(), rawText: z.string().min(1) })).mutation(async ({ ctx, input }) => {
@@ -834,9 +1030,14 @@ export const appRouter = router({
     list: protectedProcedure.query(async () => { if (!isDbConfigured()) return []; return listActiveTargets(); }),
     create: protectedProcedure.input(z.object({ target: z.number().nonnegative(), level: z.enum(["TESTER", "TEAM_LEADER", "PROJECT", "DAILY", "WEEKLY", "MONTHLY"]), testerId: z.number().optional(), teamLeaderId: z.number().optional(), projectId: z.number().optional(), effectiveDate: z.string(), endDate: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
-      const isAdmin = ctx.user.accountRole === "admin" || ctx.user.role === "admin";
+      const isAdmin = isHqLevel(ctx.user);
       if (ctx.user.accountRole === "tester") throw new Error("Only Team Leaders and Admins can set targets.");
-      if (!isAdmin) {
+      if (ctx.user.accountRole === "manager") {
+        const scope = await getRegionScope(ctx.user);
+        if (!scope) throw new Error("No region assigned to your account");
+        if (input.teamLeaderId && !scope.leaderIds.includes(input.teamLeaderId)) throw new Error("Team Leader is not in your region");
+        if (input.testerId && !scope.testerIds.includes(input.testerId)) throw new Error("Tester is not in your region");
+      } else if (!isAdmin) {
         const leaders = await listTeamLeaders();
         const own = leaders.find(leader => cleanName(leader.name) === cleanName(ctx.user.name ?? ""));
         if (input.teamLeaderId && (!own || input.teamLeaderId !== own.id)) throw new Error("You can only set targets for your own team.");
@@ -847,8 +1048,14 @@ export const appRouter = router({
       return { id };
     }),
     update: protectedProcedure.input(z.object({ targetId: z.number().int().positive(), target: z.number().nonnegative(), effectiveDate: z.string(), endDate: z.string().optional() })).mutation(async ({ ctx, input }) => {
-      const isAdmin = ctx.user.accountRole === "admin" || ctx.user.role === "admin";
+      const isAdmin = isManagerLevel(ctx.user);
       if (!isAdmin) throw new Error("Only admins can edit targets");
+      if (!isHqLevel(ctx.user)) {
+        const scope = await getRegionScope(ctx.user);
+        const existingCheck = await getTarget(input.targetId);
+        if (!existingCheck) throw new Error("Target not found");
+        if (scope && !((existingCheck.testerId != null && scope.testerIds.includes(existingCheck.testerId)) || (existingCheck.teamLeaderId != null && scope.leaderIds.includes(existingCheck.teamLeaderId)))) throw new Error("Target is not in your region");
+      }
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const existing = await getTarget(input.targetId);
       if (!existing) throw new Error("Target not found");
@@ -859,8 +1066,14 @@ export const appRouter = router({
       return { success: true };
     }),
     remove: protectedProcedure.input(z.object({ targetId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
-      const isAdmin = ctx.user.accountRole === "admin" || ctx.user.role === "admin";
+      const isAdmin = isManagerLevel(ctx.user);
       if (!isAdmin) throw new Error("Only admins can delete targets");
+      if (!isHqLevel(ctx.user)) {
+        const scope = await getRegionScope(ctx.user);
+        const existingCheck = await getTarget(input.targetId);
+        if (!existingCheck) throw new Error("Target not found");
+        if (scope && !((existingCheck.testerId != null && scope.testerIds.includes(existingCheck.testerId)) || (existingCheck.teamLeaderId != null && scope.leaderIds.includes(existingCheck.teamLeaderId)))) throw new Error("Target is not in your region");
+      }
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const existing = await getTarget(input.targetId);
       if (!existing) throw new Error("Target not found");
@@ -869,15 +1082,32 @@ export const appRouter = router({
       return { success: true };
     }),
   }),
-  audit: router({ list: protectedProcedure.query(({ ctx }) => { if (ctx.user.accountRole !== "admin" && ctx.user.role !== "admin") throw new Error("Only Admins can view the audit log."); return listAuditLogs(); }) }),
+  audit: router({ list: protectedProcedure.query(async ({ ctx }) => {
+    if (!isManagerLevel(ctx.user)) throw new Error("Only staff can view the audit log.");
+    const logs = await listAuditLogs();
+    if (isHqLevel(ctx.user)) return logs;
+    // Managers see audit entries touching their region's roster.
+    const scope = await getRegionScope(ctx.user);
+    if (!scope) return [];
+    const ids = new Set([...scope.leaderIds, ...scope.testerIds]);
+    return logs.filter(log => {
+      const v = log.newValue as Record<string, unknown> | null;
+      const o = log.oldValue as Record<string, unknown> | null;
+      const check = (obj: Record<string, unknown> | null) => obj && (
+        (typeof obj.testerId === "number" && ids.has(obj.testerId)) ||
+        (typeof obj.teamLeaderId === "number" && ids.has(obj.teamLeaderId))
+      );
+      return check(v) || check(o) || log.userId === ctx.user.id;
+    });
+  }) }),
   settings: router({
-    get: adminProcedure.query(async () => {
+    get: hqAdminProcedure.query(async () => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const settings = await getAppSettings();
       const { smtpPass: _smtpPass, ...safe } = settings;
       return { ...safe, smtpConfigured: Boolean(settings.smtpHost && settings.smtpUser && settings.smtpPass) };
     }),
-    update: adminProcedure.input(z.object({
+    update: hqAdminProcedure.input(z.object({
       reportTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM, e.g. 22:30").optional(),
       timezone: z.string().min(1).max(60).optional(),
       adminEmail: z.string().email().max(320).nullable().optional(),
@@ -904,11 +1134,11 @@ export const appRouter = router({
       const { smtpPass: _smtpPass, ...safe } = updated;
       return { ...safe, smtpConfigured: Boolean(updated.smtpHost && updated.smtpUser && updated.smtpPass) };
     }),
-    deliveryStatus: adminProcedure.query(async () => {
+    deliveryStatus: hqAdminProcedure.query(async () => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       return reportAutomationStatus();
     }),
-    runReportNow: adminProcedure.input(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).mutation(async ({ ctx, input }) => {
+    runReportNow: hqAdminProcedure.input(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const report = await compileDailyReport(input.date);
       const delivery = await deliverDailyReport(report.date, report.workbook, report.summary);
