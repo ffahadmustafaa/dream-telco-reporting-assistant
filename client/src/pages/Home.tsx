@@ -308,8 +308,8 @@ function Assistant() { const [messages, setMessages] = useState<Message[]>([]); 
 
 export function Automation() {
   const { user } = useAuth();
-  const settings = trpc.settings.get.useQuery(undefined, { enabled: isHqLevel(user?.accountRole) });
-  if (!isHqLevel(user?.accountRole)) return <Card className="border-amber-200 bg-amber-50"><CardContent className="p-8"><h1 className="font-display text-2xl font-semibold text-amber-950">HQ admin access required</h1><p className="mt-2 text-sm text-amber-800">Automation settings are restricted to super and HQ admins.</p></CardContent></Card>;
+  const settings = trpc.settings.get.useQuery(undefined, { enabled: isSuperAdmin(user?.accountRole) });
+  if (!isSuperAdmin(user?.accountRole)) return <Card className="border-amber-200 bg-amber-50"><CardContent className="p-8"><h1 className="font-display text-2xl font-semibold text-amber-950">Super admin access required</h1><p className="mt-2 text-sm text-amber-800">Automation settings are restricted to the super admin.</p></CardContent></Card>;
   const delivery = trpc.settings.deliveryStatus.useQuery();
   const utils = trpc.useUtils();
   const [form, setForm] = useState({ reportTime: "22:30", timezone: "Asia/Karachi", adminEmail: "" });

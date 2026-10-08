@@ -691,9 +691,9 @@ export const appRouter = router({
     }),
   }),
   adminDashboard: router({
-    reportDelivery: hqAdminProcedure.query(() => reportDeliveryConfig()),
-    sendTestReport: hqAdminProcedure.mutation(async () => { const report = await compileDailyReport(); const delivery = await deliverDailyReport(report.date, report.workbook, `${report.summary}\n\nThis was a manual test dispatch from the Admin Dashboard.`); return { success: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery }; }),
-    exportReport: hqAdminProcedure.mutation(async () => { const report = await compileDailyReport(); return { fileName: `Daily_Operations_Report_${report.date}.xlsx`, contentBase64: report.workbook.toString("base64"), date: report.date, rows: report.rows.length, grandTotal: report.grandTotal }; }),
+    reportDelivery: superAdminProcedure.query(() => reportDeliveryConfig()),
+    sendTestReport: superAdminProcedure.mutation(async () => { const report = await compileDailyReport(); const delivery = await deliverDailyReport(report.date, report.workbook, `${report.summary}\n\nThis was a manual test dispatch from the Admin Dashboard.`); return { success: true, date: report.date, rows: report.rows.length, grandTotal: report.grandTotal, delivery }; }),
+    exportReport: superAdminProcedure.mutation(async () => { const report = await compileDailyReport(); return { fileName: `Daily_Operations_Report_${report.date}.xlsx`, contentBase64: report.workbook.toString("base64"), date: report.date, rows: report.rows.length, grandTotal: report.grandTotal }; }),
     summary: managerProcedure.query(async ({ ctx }) => {
       if (!isDbConfigured()) return { users: [], payouts: [], metrics: { totalUsers: 0, pendingUsers: 0, activeUsers: 0, blockedUsers: 0, pendingPayouts: 0, approvedPayouts: 0, paidPayouts: 0, payoutValue: 0 } };
       const [userRows, payoutRows] = await Promise.all([listUsers(), listPayouts(200)]);
@@ -1121,13 +1121,13 @@ export const appRouter = router({
     });
   }) }),
   settings: router({
-    get: hqAdminProcedure.query(async () => {
+    get: superAdminProcedure.query(async () => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const settings = await getAppSettings();
       const { smtpPass: _smtpPass, ...safe } = settings;
       return { ...safe, smtpConfigured: Boolean(settings.smtpHost && settings.smtpUser && settings.smtpPass) };
     }),
-    update: hqAdminProcedure.input(z.object({
+    update: superAdminProcedure.input(z.object({
       reportTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM, e.g. 22:30").optional(),
       timezone: z.string().min(1).max(60).optional(),
       adminEmail: z.string().email().max(320).nullable().optional(),
@@ -1156,11 +1156,11 @@ export const appRouter = router({
       const { smtpPass: _smtpPass, ...safe } = updated;
       return { ...safe, smtpConfigured: Boolean(updated.smtpHost && updated.smtpUser && updated.smtpPass) };
     }),
-    deliveryStatus: hqAdminProcedure.query(async () => {
+    deliveryStatus: superAdminProcedure.query(async () => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       return reportAutomationStatus();
     }),
-    runReportNow: hqAdminProcedure.input(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).mutation(async ({ ctx, input }) => {
+    runReportNow: superAdminProcedure.input(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const report = await compileDailyReport(input.date);
       const delivery = await deliverDailyReport(report.date, report.workbook, report.summary);

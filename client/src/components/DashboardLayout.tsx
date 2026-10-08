@@ -68,7 +68,7 @@ const menuItems = [
   },
   { icon: Users, label: "Admin dashboard", path: "/admin", staffOnly: true },
   { icon: Users, label: "User directory", path: "/users", staffOnly: true },
-  { icon: CalendarClock, label: "Automation", path: "/automation", hqOnly: true },
+  { icon: CalendarClock, label: "Automation", path: "/automation", superOnly: true },
   { icon: Globe, label: "Regions & staff", path: "/regions", superOnly: true },
   {
     icon: MessageSquare, label: "Whitenoise", superOnly: true,
@@ -279,7 +279,6 @@ function DashboardLayoutContent({
   const visibleMenuItems = menuItems.filter(
     item =>
       (!item.superOnly || isSuper) &&
-      (!item.hqOnly || isHq) &&
       (!item.staffOnly || isManager) &&
       (!item.leaderOnly || role === "team_leader" || isManager || user?.role === "admin") &&
       (role !== "tester" ||
