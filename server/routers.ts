@@ -1167,8 +1167,7 @@ export const appRouter = router({
       return { success: true };
     }),
   }),
-  audit: router({ list: protectedProcedure.query(async ({ ctx }) => {
-    if (!isManagerLevel(ctx.user)) throw new Error("Only staff can view the audit log.");
+  audit: router({ list: managerProcedure.query(async ({ ctx }) => {
     const logs = await listAuditLogs();
     if (isHqLevel(ctx.user)) return logs;
     // Managers see audit entries touching their region's roster.
