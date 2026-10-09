@@ -13,7 +13,10 @@ const WN_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like G
 export interface WnConfig {
   email: string | null;
   hasPassword: boolean;
+  hasApiKey: boolean;
 }
+
+const WN_API_BASE = "https://api.whitenoise.one";
 
 export interface WnRosterRow {
   tester: string;
@@ -30,26 +33,47 @@ import { getFirestoreDb } from "./firebase";
 const WN_CONFIG_DOC = "whitenoise_config";
 const WN_ROSTER_DOC = "whitenoise_roster";
 
-export async function getWhitenoiseConfig(): Promise<WnConfig & { password: string | null }> {
+export async function getWhitenoiseConfig(): Promise<WnConfig & { password: string | null; apiKey: string | null }> {
   const db = getFirestoreDb();
-  if (!db) return { email: null, hasPassword: false, password: null };
+  if (!db) return { email: null, hasPassword: false, hasApiKey: false, password: null, apiKey: null };
   const snap = await db.collection(WN_CONFIG_DOC).doc("1").get();
   const data = snap.exists ? (snap.data() as Record<string, unknown>) : {};
   const password = typeof data.password === "string" ? data.password : null;
+  const apiKey = typeof data.apiKey === "string" ? data.apiKey : null;
   return {
     email: typeof data.email === "string" ? data.email : null,
     hasPassword: !!password,
+    hasApiKey: !!apiKey,
     password,
+    apiKey,
   };
 }
 
-export async function saveWhitenoiseCredentials(email: string, password: string): Promise<void> {
+export async function saveWhitenoiseCredentials(email: string, password: string, apiKey?: string): Promise<void> {
   const db = getFirestoreDb();
   if (!db) throw new Error("Database is unavailable");
-  await db.collection(WN_CONFIG_DOC).doc("1").set(
-    { email: email.trim(), password, updatedAt: new Date() },
-    { merge: true },
-  );
+  const update: Record<string, unknown> = { email: email.trim(), password, updatedAt: new Date() };
+  if (apiKey !== undefined) update.apiKey = apiKey.trim();
+  await db.collection(WN_CONFIG_DOC).doc("1").set(update, { merge: true });
+}
+
+/**
+ * Reserve a virtual number via the whitenoise API.
+ * POST/GET https://api.whitenoise.one/exe/start?api_key=KEY&phone=NUMBER&service=SERVICE
+ * Returns "Execution started" on success, or an error message.
+ */
+export async function reserveWhitenoiseNumber(apiKey: string, phone: string, service: string): Promise<{ ok: boolean; message: string }> {
+  const params = new URLSearchParams({ api_key: apiKey, phone: phone.trim(), service: service.trim() });
+  const res = await fetch(`${WN_API_BASE}/exe/start?${params.toString()}`, {
+    headers: { "User-Agent": WN_UA },
+  });
+  const text = await res.text();
+  try {
+    const data = JSON.parse(text) as { status?: string; message?: string };
+    return { ok: data.status === "OK", message: data.message ?? text.slice(0, 200) };
+  } catch {
+    return { ok: false, message: text.slice(0, 200) };
+  }
 }
 
 export async function getWhitenoiseRoster(): Promise<WnRosterRow[]> {

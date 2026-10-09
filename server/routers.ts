@@ -93,7 +93,7 @@ import {
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { compileDailyReport } from "./scheduledReports";
 import { deliverDailyReport, deliverReportTo, reportAutomationStatus, reportDeliveryConfig, sendRegistrationOtpEmail } from "./reportDelivery";
-import { analyzeOtp, fetchWhitenoiseSms, getWhitenoiseConfig, getWhitenoiseRoster, parseManualSmsLog, saveWhitenoiseCredentials, saveWhitenoiseRoster, wnRangeEnd, wnRangeStart, type WnSmsRecord } from "./whitenoise";
+import { analyzeOtp, fetchWhitenoiseSms, getWhitenoiseConfig, getWhitenoiseRoster, parseManualSmsLog, reserveWhitenoiseNumber, saveWhitenoiseCredentials, saveWhitenoiseRoster, wnRangeEnd, wnRangeStart, type WnSmsRecord } from "./whitenoise";
 import { answerWorkspaceQuestion, parseAssistantCommand, parseQuestionDateRange, type AssistantCommand, type WorkspaceSnapshot } from "./aiAssistant";
 import { answerDatasetQuestion, parseWorkbook, summarizeDataset } from "./aiDataset";
 
@@ -696,11 +696,18 @@ export const appRouter = router({
     getConfig: superAdminProcedure.query(async () => {
       const config = await getWhitenoiseConfig();
       const roster = await getWhitenoiseRoster();
-      return { email: config.email, hasPassword: config.hasPassword, rosterCount: roster.length };
+      return { email: config.email, hasPassword: config.hasPassword, hasApiKey: config.hasApiKey, rosterCount: roster.length };
     }),
-    saveCredentials: superAdminProcedure.input(z.object({ email: z.string().email().max(320), password: z.string().min(1).max(256) })).mutation(async ({ input }) => {
-      await saveWhitenoiseCredentials(input.email, input.password);
+    saveCredentials: superAdminProcedure.input(z.object({ email: z.string().email().max(320), password: z.string().min(1).max(256), apiKey: z.string().max(128).optional() })).mutation(async ({ input }) => {
+      await saveWhitenoiseCredentials(input.email, input.password, input.apiKey);
       return { success: true } as const;
+    }),
+    reserveNumber: superAdminProcedure.input(z.object({ phone: z.string().min(7).max(20), service: z.string().min(1).max(64) })).mutation(async ({ input }) => {
+      const config = await getWhitenoiseConfig();
+      if (!config.apiKey) throw new Error("Whitenoise API key is not configured. Save it in the login card above.");
+      const result = await reserveWhitenoiseNumber(config.apiKey, input.phone, input.service);
+      if (!result.ok) throw new Error(result.message);
+      return { success: true, message: result.message } as const;
     }),
     getRoster: superAdminProcedure.query(async () => getWhitenoiseRoster()),
     saveRoster: superAdminProcedure.input(z.object({ rows: z.array(z.object({ tester: z.string().max(160), teamLeader: z.string().max(160), number: z.string().max(32) })).max(2000) })).mutation(async ({ input }) => {

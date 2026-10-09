@@ -104,15 +104,18 @@ function CredentialsCard() {
   });
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [apiKey, setApiKey] = useState("");
   return <Card className="border-slate-200 shadow-none"><CardHeader><CardTitle className="text-base">Whitenoise login</CardTitle><p className="text-xs text-slate-500">Used for automatic OTP fetching. Stored on the server — only admins can see this page.</p></CardHeader><CardContent className="space-y-4">
     <div className="flex items-center gap-2 text-xs">
       <Badge className={config.data?.hasPassword ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}>{config.data?.hasPassword ? `Configured (${config.data.email ?? ""})` : "Not configured"}</Badge>
+      {config.data?.hasApiKey && <Badge className="bg-blue-50 text-blue-700">API key saved</Badge>}
     </div>
     <div className="grid gap-4 sm:grid-cols-2">
       <div><Label className="text-xs">Email</Label><Input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="whitenoise account email" className="mt-1.5" /></div>
       <div><Label className="text-xs">Password</Label><Input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="whitenoise password" className="mt-1.5" /></div>
     </div>
-    <Button disabled={!email.trim() || !password || save.isPending} onClick={() => save.mutate({ email: email.trim(), password })} className="bg-slate-950 hover:bg-slate-800">{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save credentials"}</Button>
+    <div><Label className="text-xs">API key <span className="text-slate-400">(optional — for number reservation via api.whitenoise.one)</span></Label><Input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="paste API key" className="mt-1.5" /></div>
+    <Button disabled={!email.trim() || !password || save.isPending} onClick={() => save.mutate({ email: email.trim(), password, apiKey: apiKey.trim() || undefined })} className="bg-slate-950 hover:bg-slate-800">{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save credentials"}</Button>
   </CardContent></Card>;
 }
 
