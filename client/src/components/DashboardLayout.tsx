@@ -29,6 +29,7 @@ import {
   FileBarChart,
   FileSpreadsheet,
   Flag,
+  FolderKanban,
   Globe,
   History,
   LayoutDashboard,
@@ -50,12 +51,25 @@ import { Button } from "./ui/button";
 
 const DREAM_TELCO_LOGO = "/dream-telco-logo.png";
 
-const menuItems = [
+type MenuItem = {
+  icon: React.ElementType;
+  label: string;
+  path?: string;
+  testerOnly?: boolean;
+  leaderOnly?: boolean;
+  staffOnly?: boolean;
+  superOnly?: boolean;
+  hqOnly?: boolean;
+  children?: Array<{ label: string; path: string }>;
+};
+
+const menuItems: MenuItem[] = [
   { icon: LayoutDashboard, label: "Overview", path: "/" },
   { icon: Activity, label: "Daily reporting", path: "/daily" },
   { icon: WalletCards, label: "Payout control", path: "/payouts" },
   { icon: Users, label: "Roster & teams", path: "/roster" },
   { icon: Flag, label: "Targets", path: "/targets" },
+  { icon: FolderKanban, label: "Projects", path: "/projects", hqOnly: true },
   { icon: ReceiptText, label: "Audit trail", path: "/audit" },
   { icon: Bot, label: "AI assistant", path: "/assistant" },
   { icon: History, label: "My history", path: "/history", testerOnly: true },
@@ -279,6 +293,7 @@ function DashboardLayoutContent({
   const visibleMenuItems = menuItems.filter(
     item =>
       (!item.superOnly || isSuper) &&
+      (!item.hqOnly || isHq) &&
       (!item.staffOnly || isManager) &&
       (!item.leaderOnly || role === "team_leader" || isManager || user?.role === "admin") &&
       (role !== "tester" ||
@@ -344,10 +359,10 @@ function DashboardLayoutContent({
               {visibleMenuItems.map(item => (
                 item.children
                   ? <WhitenoiseGroup key={item.label} item={item as { icon: React.ElementType; label: string; children: Array<{ label: string; path: string }> }} location={location} navigate={navigate} />
-                  : <SidebarMenuItem key={item.path}>
+                  : <SidebarMenuItem key={item.label}>
                   <SidebarMenuButton
                     isActive={location === item.path}
-                    onClick={() => navigate(item.path)}
+                    onClick={() => navigate(item.path ?? "/")}
                     tooltip={item.label}
                     className="h-10 gap-3 rounded-xl font-medium text-slate-500 dark:text-slate-400 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-700 dark:data-[active=true]:bg-emerald-950/60 dark:data-[active=true]:text-emerald-300"
                   >

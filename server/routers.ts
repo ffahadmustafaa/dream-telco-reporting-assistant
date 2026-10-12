@@ -33,7 +33,6 @@ import {
   insertPayout,
   insertPayoutRule,
   insertPerformance,
-  insertProject,
   insertTarget,
   insertTeamLeader,
   insertTester,
@@ -951,11 +950,11 @@ export const appRouter = router({
   }),
   projects: router({
     list: protectedProcedure.query(async () => { if (!isDbConfigured()) return []; return listProjects(); }),
-    add: hqAdminProcedure.input(z.object({ name: z.string().min(1), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+    add: hqAdminProcedure.input(z.object({ name: z.string().min(1).max(60), notes: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
-      const id = await insertProject({ name: input.name.trim(), notes: input.notes ?? null });
+      const project = await upsertProjectByName(input.name.trim(), input.notes?.trim() || undefined);
       await addAuditLog({ action: "Project Added", userId: ctx.user.id, newValue: input });
-      return { id };
+      return { id: project.id };
     }),
     rename: hqAdminProcedure.input(z.object({ projectId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
