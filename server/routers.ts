@@ -152,7 +152,7 @@ function applyRegionScope<T extends { teamLeaderId?: number | null; testerId?: n
 type RosterTester = Tester;
 type RosterLeader = TeamLeader;
 type ProjectRecord = Project;
-type CommandUser = { id: number; name: string | null; accountRole: "super_admin" | "hq_admin" | "manager" | "admin" | "team_leader" | "tester"; isAdmin: boolean };
+type CommandUser = { id: number; name: string | null; accountRole: "super_admin" | "hq_admin" | "manager" | "admin" | "team_leader" | "tester"; isAdmin: boolean; teamLeaderId: number | null };
 type CommandData = { roster: RosterTester[]; leaderRows: RosterLeader[]; projectRows: ProjectRecord[]; reportDate: string; latest: string };
 
 /** Role-scoped snapshot for deterministic assistant Q&A. */
@@ -200,16 +200,24 @@ async function executeAssistantCommand(user: CommandUser, command: AssistantComm
       let tester: RosterTester | undefined;
       let createdNote = "";
       if (user.accountRole === "tester") {
-        tester = roster.find(item => cleanName(item.name) === cleanName(user.name ?? ""));
+        tester = roster.find(item => cleanName(item.name) === cleanName(user.name ?? "") && item.teamLeaderId === user.teamLeaderId)
+          ?? roster.find(item => cleanName(item.name) === cleanName(user.name ?? ""));
         if (!tester) return "Your tester profile isn't linked yet — ask your Team Leader to set it up.";
         if (cleanName(command.name) !== cleanName(tester.name)) return `You can only log your own work, ${tester.name}.`;
       } else {
         const matches = findTesters(command.name).filter(item => item.status === "ACTIVE");
-        if (matches.length === 1) {
-          tester = matches[0];
+        // Same name on different teams: narrow by the named/inferred team leader first.
+        const namedLeader = command.teamLeader ? findLeader(command.teamLeader) : undefined;
+        const scopeLeaderId = namedLeader?.id ?? (user.accountRole === "team_leader" ? ownLeader?.id : undefined);
+        const pool = scopeLeaderId != null ? matches.filter(item => item.teamLeaderId === scopeLeaderId) : matches;
+        if (pool.length === 1) {
+          tester = pool[0];
           if (user.accountRole === "team_leader" && (!ownLeader || tester!.teamLeaderId !== ownLeader.id)) return `${command.name} is not on your team, so I can't log this for them.`;
+        } else if (pool.length > 1) {
+          const teams = Array.from(new Set(pool.map(item => leaderRows.find(leader => leader.id === item.teamLeaderId)?.name).filter((name): name is string => Boolean(name))));
+          return `There are ${pool.length} testers named "${command.name}"${teams.length ? ` (teams: ${teams.join(", ")})` : ""}. Please say which one, e.g. "${command.name} under <team leader>".`;
         } else {
-          let leader = command.teamLeader ? findLeader(command.teamLeader) : undefined;
+          let leader = namedLeader;
           if (command.teamLeader && !leader) {
             if (!user.isAdmin) return `Team Leader "${command.teamLeader}" isn't on the roster, and only an Admin can create one. Ask an Admin to add them first.`;
             leader = await upsertTeamLeader(command.teamLeader);
@@ -341,8 +349,10 @@ export const appRouter = router({
       }
       await updateUser(ctx.user.id, patch as Parameters<typeof updateUser>[1]);
       if (teamLeaderChanged && ctx.user.name) {
-        // Keep the roster entry in sync with the new team assignment.
-        await upsertTesterByName(ctx.user.name, input.teamLeaderId as number);
+        // Move the user's own roster entry to the new team (matched by old team first).
+        const ownEntry = (await listTesters()).find(t => cleanName(t.name) === cleanName(ctx.user.name ?? "") && t.teamLeaderId === ctx.user.teamLeaderId);
+        if (ownEntry) await updateTester(ownEntry.id, { teamLeaderId: input.teamLeaderId as number, status: "ACTIVE" });
+        else await upsertTesterByName(ctx.user.name, input.teamLeaderId as number);
       }
       await setLocalSession(ctx, { openId: ctx.user.openId, name: input.name.trim() }, true);
       await addAuditLog({ action: input.newPassword ? "Profile & Password Updated" : teamLeaderChanged ? "Profile & Team Leader Updated" : "Profile Updated", userId: ctx.user.id, newValue: { name: input.name.trim(), email, phoneNumber: phone, passwordChanged: Boolean(input.newPassword), teamLeaderId: teamLeaderChanged ? input.teamLeaderId : undefined }, reason: "Password-confirmed self-service update" });
@@ -854,11 +864,11 @@ export const appRouter = router({
       if (scope && !scope.leaderIds.includes(input.teamLeaderId)) throw new Error("Team Leader is not in your region");
       const leader = await getTeamLeader(input.teamLeaderId);
       const name = input.name.trim();
-      const existing = (await listTesters()).find(item => cleanName(item.name) === cleanName(name));
+      const existing = (await listTesters()).find(item => cleanName(item.name) === cleanName(name) && item.teamLeaderId === input.teamLeaderId);
       if (existing) {
         if (scope && existing.regionId !== scope.regionId && !scope.leaderIds.includes(existing.teamLeaderId)) throw new Error("Tester is not in your region");
-        await updateTester(existing.id, { teamLeaderId: input.teamLeaderId, status: "ACTIVE", regionId: leader?.regionId ?? scope?.regionId ?? null, notes: input.notes ?? null });
-        await addAuditLog({ action: "Tester Reassigned", userId: ctx.user.id, oldValue: existing, newValue: input });
+        await updateTester(existing.id, { status: "ACTIVE", regionId: leader?.regionId ?? scope?.regionId ?? null, notes: input.notes ?? null });
+        await addAuditLog({ action: "Tester Rejoined", userId: ctx.user.id, oldValue: existing, newValue: input });
         return { id: existing.id };
       }
       const id = await insertTester({ name, teamLeaderId: input.teamLeaderId, status: "ACTIVE", regionId: leader?.regionId ?? scope?.regionId ?? null, notes: input.notes ?? null });
@@ -1260,9 +1270,9 @@ export const appRouter = router({
       const roster = regionScope ? allTesters.filter(t => regionScope.testerIds.includes(t.id)) : allTesters;
       const leaderRows = regionScope ? allLeaders.filter(l => regionScope.leaderIds.includes(l.id)) : allLeaders;
       const isAdmin = isHq;
-      const commandUser: CommandUser = { id: ctx.user.id, name: ctx.user.name, accountRole: ctx.user.accountRole, isAdmin };
+      const commandUser: CommandUser = { id: ctx.user.id, name: ctx.user.name, accountRole: ctx.user.accountRole, isAdmin, teamLeaderId: ctx.user.teamLeaderId ?? null };
       const ownLeader = commandUser.accountRole === "team_leader" ? leaderRows.find(item => cleanName(item.name) === cleanName(commandUser.name ?? "")) : undefined;
-      const scopeTesters = isAdmin || regionScope ? roster : commandUser.accountRole === "team_leader" ? roster.filter(item => ownLeader && item.teamLeaderId === ownLeader.id) : roster.filter(item => cleanName(item.name) === cleanName(commandUser.name ?? ""));
+      const scopeTesters = isAdmin || regionScope ? roster : commandUser.accountRole === "team_leader" ? roster.filter(item => ownLeader && item.teamLeaderId === ownLeader.id) : roster.filter(item => cleanName(item.name) === cleanName(commandUser.name ?? "") && (commandUser.teamLeaderId == null || item.teamLeaderId === commandUser.teamLeaderId));
       const scopeLeaders = isAdmin || regionScope ? leaderRows : ownLeader ? [ownLeader] : [];
       const scopeTesterIds = new Set(scopeTesters.map(t => t.id));
 

@@ -84,18 +84,20 @@ export function parseAssistantCommand(text: string, projectNames: string[]): Ass
     if (qty != null) return { type: "set_target", quantity: qty, name: title(m[2]!) };
   }
 
-  // Optional "under <Team Leader>" suffix, e.g. "Bisma did 50 OTP on Super X under Mehwish".
+  // Optional "under <Team Leader>" anywhere, e.g. "Bisma did 50 OTP on Super X under Mehwish"
+  // or "Rimsha under Fahad Mustafa did 30 on Inception".
   // Unknown testers are auto-added under that team leader by the caller.
   let teamLeader: string | null = null;
   let work = t;
-  const underM = work.match(/\s+under\s+([a-z][a-z ]+)\s*$/i);
-  if (underM) {
+  const underM = work.match(/\s+under\s+([a-z][a-z ]+?)(?=\s+(?:did|done|completed?|submitted?|logged?|has|have|\d)|\s*$)/i);
+  if (underM && underM.index != null) {
     teamLeader = title(underM[1]!.trim());
-    work = work.slice(0, underM.index);
+    work = (work.slice(0, underM.index) + work.slice(underM.index + underM[0].length)).replace(/\s+/g, " ").trim();
   }
 
-  // "Bisma did 50 OTP on Super X" | "Ali 120/120 Section X" | "log 200 for Rida super x"
-  m = work.match(/([A-Za-z][A-Za-z ]*?)\s+(?:did|done|completed?|submitted?|logged?|has|have)?\s*(\d[\d,\s\/]*)\s*(?:otps?)?\s*(?:on|in|for)?\s*(section\s*x|super\s*x|inception)/i);
+  // "Bisma did 50 OTP on Super X" | "Ali 120/120 Apollo" | "log 200 for Rida super x"
+  const projAlt = projectNames.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")).join("|");
+  m = work.match(new RegExp(`([A-Za-z][A-Za-z ]*?)\\s+(?:did|done|completed?|submitted?|logged?|has|have)?\\s*(\\d[\\d,\\s\\/]*)\\s*(?:otps?)?\\s*(?:on|in|for)?\\s*(${projAlt})`, "i"));
   if (m) {
     const qty = parseQuantity(m[2]!);
     const project = parseProjectName(m[3]!, projectNames);

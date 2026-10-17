@@ -583,10 +583,11 @@ export async function upsertTeamLeader(name: string): Promise<TeamLeader> {
 /** Find a tester by name, or create + reactivate it when missing. */
 export async function upsertTesterByName(name: string, teamLeaderId: number): Promise<Tester> {
   const rows = await listTesters();
-  const existing = rows.find((t) => t.name.toLowerCase() === name.toLowerCase());
+  // Same names on different teams are different people: match by name AND team.
+  const existing = rows.find((t) => t.name.toLowerCase() === name.toLowerCase() && t.teamLeaderId === teamLeaderId);
   if (existing) {
-    await updateTester(existing.id, { status: "ACTIVE", teamLeaderId });
-    return { ...existing, status: "ACTIVE" as const, teamLeaderId };
+    await updateTester(existing.id, { status: "ACTIVE" });
+    return { ...existing, status: "ACTIVE" as const };
   }
   const id = await insertTester({ name, teamLeaderId, status: "ACTIVE", dateAdded: new Date(), dateInactive: null, notes: null });
   return (await getTester(id))!;
