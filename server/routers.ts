@@ -812,7 +812,7 @@ export const appRouter = router({
       } else if (ctx.user.role !== "admin" && !isHqLevel(ctx.user)) {
         const ownName = cleanName(ctx.user.name ?? "");
         const ownLeaderIds = data.leaders.filter(leader => ctx.user.accountRole === "team_leader" && cleanName(leader.name) === ownName).map(leader => leader.id);
-        const allowedTesterIds = data.testers.filter(tester => ctx.user.accountRole === "team_leader" ? ownLeaderIds.includes(tester.teamLeaderId) : cleanName(tester.name) === ownName).map(tester => tester.id);
+        const allowedTesterIds = data.testers.filter(tester => ctx.user.accountRole === "team_leader" ? ownLeaderIds.includes(tester.teamLeaderId) : cleanName(tester.name) === ownName && (ctx.user.teamLeaderId == null || tester.teamLeaderId === ctx.user.teamLeaderId)).map(tester => tester.id);
         const allowedLeaderIds = data.testers.filter(tester => allowedTesterIds.includes(tester.id)).map(tester => tester.teamLeaderId);
         data = { ...data, leaders: data.leaders.filter(leader => allowedLeaderIds.includes(leader.id)), testers: data.testers.filter(tester => allowedTesterIds.includes(tester.id)), performance: data.performance.filter(row => allowedTesterIds.includes(row.testerId)), targets: data.targets.filter(row => (row.testerId != null && allowedTesterIds.includes(row.testerId)) || (row.teamLeaderId != null && allowedLeaderIds.includes(row.teamLeaderId))), payouts: data.payouts.filter(row => (row.testerId != null && allowedTesterIds.includes(row.testerId)) || (row.teamLeaderId != null && allowedLeaderIds.includes(row.teamLeaderId))) };
       }
@@ -914,9 +914,9 @@ export const appRouter = router({
       const own = (await listTeamLeaders()).find(leader => cleanName(leader.name) === cleanName(ctx.user.name ?? ""));
       if (!own) throw new Error("No team is linked to your account");
       const name = input.name.trim();
-      const existing = (await listTesters()).find(item => cleanName(item.name) === cleanName(name));
+      // Same name may exist on another team — only treat it as a duplicate within this leader's own team.
+      const existing = (await listTesters()).find(item => cleanName(item.name) === cleanName(name) && item.teamLeaderId === own.id);
       if (existing) {
-        if (existing.teamLeaderId !== own.id) throw new Error("A tester with this name already exists on another team");
         await updateTester(existing.id, { status: "ACTIVE", notes: input.notes ?? existing.notes });
         await addAuditLog({ action: "Tester Rejoined (Leader)", userId: ctx.user.id, oldValue: existing, newValue: input });
         return { id: existing.id };
@@ -994,7 +994,7 @@ export const appRouter = router({
     calculate: protectedProcedure.input(z.object({ businessDate: z.string() })).query(async ({ ctx, input }) => {
       if (!isDbConfigured()) return { rows: [], totals: { payout: 0 } };
       const [performance, rules, projectRows, roster, leaders] = await Promise.all([listPerformanceByDate(toDate(input.businessDate)), listActivePayoutRules(), listProjects(), listTesters(), listTeamLeaders()]);
-      const visibleTesterIds = ctx.user.role === "admin" ? null : roster.filter(tester => ctx.user.accountRole === "team_leader" ? cleanName(leaders.find(leader => leader.id === tester.teamLeaderId)?.name ?? "") === cleanName(ctx.user.name ?? "") : cleanName(tester.name) === cleanName(ctx.user.name ?? "")).map(tester => tester.id);
+      const visibleTesterIds = ctx.user.role === "admin" ? null : roster.filter(tester => ctx.user.accountRole === "team_leader" ? cleanName(leaders.find(leader => leader.id === tester.teamLeaderId)?.name ?? "") === cleanName(ctx.user.name ?? "") : cleanName(tester.name) === cleanName(ctx.user.name ?? "") && (ctx.user.teamLeaderId == null || tester.teamLeaderId === ctx.user.teamLeaderId)).map(tester => tester.id);
       const rows = performance.filter(row => !visibleTesterIds || visibleTesterIds.includes(row.testerId)).map(row => {
         const rule = rules.find(item => item.projectId === row.projectId && item.testerId === row.testerId) ?? rules.find(item => item.projectId === row.projectId && !item.testerId);
         const otp = money(row.quantity);
@@ -1007,7 +1007,9 @@ export const appRouter = router({
   performance: router({
     myHistory: protectedProcedure.query(async ({ ctx }) => {
       if (!isDbConfigured()) return [];
-      const ownTester = ctx.user.accountRole === "tester" ? (await listTesters()).find(tester => cleanName(tester.name) === cleanName(ctx.user.name ?? "")) : undefined;
+      const allTesters = ctx.user.accountRole === "tester" ? await listTesters() : [];
+      const ownTester = allTesters.find(tester => cleanName(tester.name) === cleanName(ctx.user.name ?? "") && tester.teamLeaderId === ctx.user.teamLeaderId)
+        ?? allTesters.find(tester => cleanName(tester.name) === cleanName(ctx.user.name ?? ""));
       const rows = ownTester ? await listPerformanceByTester(ownTester.id) : [];
       const projectRows = await listProjects();
       return rows.map(row => ({ ...row, project: projectRows.find(project => project.id === row.projectId)?.name ?? "Unknown" })).slice(0, 200);
@@ -1053,7 +1055,7 @@ export const appRouter = router({
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const tester = await getTester(input.testerId);
       if (!tester) throw new Error("Tester not found");
-      if (ctx.user.accountRole === "tester" && cleanName(tester.name) !== cleanName(ctx.user.name ?? "")) throw new Error("Testers can only submit their own numbers");
+      if (ctx.user.accountRole === "tester" && (cleanName(tester.name) !== cleanName(ctx.user.name ?? "") || (ctx.user.teamLeaderId != null && tester.teamLeaderId !== ctx.user.teamLeaderId))) throw new Error("Testers can only submit their own numbers");
       if (ctx.user.accountRole === "team_leader") {
         const assignedLeader = await getTeamLeader(tester.teamLeaderId);
         if (!assignedLeader || cleanName(assignedLeader.name) !== cleanName(ctx.user.name ?? "")) throw new Error("Team Leaders can only submit for their assigned team");
@@ -1081,7 +1083,7 @@ export const appRouter = router({
         return rows.filter(row => (row.testerId != null && scope.testerIds.includes(row.testerId)) || (row.teamLeaderId != null && scope.leaderIds.includes(row.teamLeaderId)));
       }
       const [visible, leaders] = await Promise.all([listTesters(), listTeamLeaders()]);
-      const ids = visible.filter(tester => ctx.user.accountRole === "team_leader" ? cleanName(leaders.find(leader => leader.id === tester.teamLeaderId)?.name ?? "") === cleanName(ctx.user.name ?? "") : cleanName(tester.name) === cleanName(ctx.user.name ?? "")).map(tester => tester.id);
+      const ids = visible.filter(tester => ctx.user.accountRole === "team_leader" ? cleanName(leaders.find(leader => leader.id === tester.teamLeaderId)?.name ?? "") === cleanName(ctx.user.name ?? "") : cleanName(tester.name) === cleanName(ctx.user.name ?? "") && (ctx.user.teamLeaderId == null || tester.teamLeaderId === ctx.user.teamLeaderId)).map(tester => tester.id);
       const filtered = rows.filter(row => row.testerId != null && ids.includes(row.testerId));
       // Testers never see earnings: strip all amount fields
       if (ctx.user.accountRole === "tester") return filtered.map(row => ({ ...row, grossPayout: 0, netPayout: 0, deductions: 0 }));
