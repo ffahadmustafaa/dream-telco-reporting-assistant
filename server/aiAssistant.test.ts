@@ -92,3 +92,39 @@ describe("answerWorkspaceQuestion", () => {
     expect(answerWorkspaceQuestion("what is the weather like?", snapshot())).toBeNull();
   });
 });
+
+describe("same-name testers on different teams", () => {
+  const dupSnapshot = (): WorkspaceSnapshot => ({
+    testers: [
+      { id: 1, name: "Rimsha", teamLeaderId: 10, status: "ACTIVE" },
+      { id: 2, name: "Rimsha", teamLeaderId: 11, status: "ACTIVE" },
+    ],
+    leaders: [
+      { id: 10, name: "Fahad Mustafa", status: "ACTIVE" },
+      { id: 11, name: "Aqsa javed", status: "ACTIVE" },
+    ],
+    projects: [
+      { id: 100, name: "Section X" },
+      { id: 101, name: "Super X" },
+    ],
+    performance: [
+      { testerId: 1, projectId: 100, quantity: 50 },
+      { testerId: 2, projectId: 100, quantity: 30 },
+    ],
+    dateLabel: "today",
+  });
+
+  it("reports each same-named tester separately instead of picking one", () => {
+    const answer = answerWorkspaceQuestion("total work by Rimsha", dupSnapshot());
+    expect(answer).toContain("Fahad Mustafa's team");
+    expect(answer).toContain("50");
+    expect(answer).toContain("Aqsa javed's team");
+    expect(answer).toContain("30");
+  });
+
+  it("disambiguates the leaderboard by team", () => {
+    const answer = answerWorkspaceQuestion("who did the most today?", dupSnapshot());
+    expect(answer).toContain("Rimsha (Fahad Mustafa)");
+    expect(answer).toContain("Rimsha (Aqsa javed)");
+  });
+});

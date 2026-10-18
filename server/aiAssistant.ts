@@ -157,11 +157,6 @@ export function parseQuestionDateRange(text: string, todayISO: string): { from: 
   return { from: todayISO, to: todayISO, label: "today" };
 }
 
-function findTester(snapshot: WorkspaceSnapshot, name: string) {
-  const needle = norm(name);
-  return snapshot.testers.find((t) => norm(t.name) === needle);
-}
-
 function totalForTester(snapshot: WorkspaceSnapshot, testerId: number, projectId?: number) {
   return snapshot.performance
     .filter((r) => r.testerId === testerId && (projectId == null || r.projectId === projectId))
@@ -197,24 +192,31 @@ export function answerWorkspaceQuestion(text: string, snapshot: WorkspaceSnapsho
   // "top performer" / "who did the most" / "leaderboard"
   if (/top|most|best|leaderboard|ranking/.test(low)) {
     const ranked = snapshot.testers
-      .map((t) => ({ name: t.name, total: totalForTester(snapshot, t.id, mentionedProjectId) }))
+      .map((t) => ({ name: t.name, leader: snapshot.leaders.find((l) => l.id === t.teamLeaderId)?.name ?? "Unassigned", total: totalForTester(snapshot, t.id, mentionedProjectId) }))
       .filter((r) => r.total > 0)
       .sort((a, b) => b.total - a.total)
       .slice(0, 5);
     if (!ranked.length) return `No OTPs have been reported ${snapshot.dateLabel}.`;
     const scope = mentionedProject ? ` (${mentionedProject})` : "";
-    return `Top performers ${snapshot.dateLabel}${scope}: ` + ranked.map((r, i) => `${i + 1}. ${r.name} — ${fmt(r.total)}`).join(", ") + ".";
+    return `Top performers ${snapshot.dateLabel}${scope}: ` + ranked.map((r, i) => `${i + 1}. ${r.name} (${r.leader}) — ${fmt(r.total)}`).join(", ") + ".";
   }
 
   // "total work by Bisma" / "how much did Ali do"
   m = low.match(/(?:total|how much).*?(?:by|for|did)\s+([a-z][a-z ]+)/);
   if (!m) m = low.match(/^([a-z][a-z ]+?)(?:'s)?\s+(?:total|report|numbers|performance)/);
   if (m) {
-    const tester = findTester(snapshot, m[1]!);
-    if (!tester) return null; // unknown name -> let the LLM/command layer handle it
-    const total = totalForTester(snapshot, tester.id, mentionedProjectId);
+    // Same name on different teams: report each separately instead of guessing.
+    const matches = snapshot.testers.filter((t) => norm(t.name) === norm(m[1]!));
+    if (!matches.length) return null; // unknown name -> let the LLM/command layer handle it
     const scope = mentionedProject ? ` on ${mentionedProject}` : "";
-    return `${tester.name} did ${fmt(total)} OTPs${scope} ${snapshot.dateLabel}.`;
+    const leaderOf = (id: number) => snapshot.leaders.find((l) => l.id === id)?.name ?? "Unassigned";
+    if (matches.length === 1) {
+      const t = matches[0]!;
+      return `${t.name} did ${fmt(totalForTester(snapshot, t.id, mentionedProjectId))} OTPs${scope} ${snapshot.dateLabel}.`;
+    }
+    return matches
+      .map((t) => `${t.name} (${leaderOf(t.teamLeaderId)}'s team) did ${fmt(totalForTester(snapshot, t.id, mentionedProjectId))} OTPs${scope} ${snapshot.dateLabel}`)
+      .join("; ") + ".";
   }
 
   // "how many testers" / headcount
