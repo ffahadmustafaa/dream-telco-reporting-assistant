@@ -205,8 +205,10 @@ export function answerWorkspaceQuestion(text: string, snapshot: WorkspaceSnapsho
   m = low.match(/(?:total|how much).*?(?:by|for|did)\s+([a-z][a-z ]+)/);
   if (!m) m = low.match(/^([a-z][a-z ]+?)(?:'s)?\s+(?:total|report|numbers|performance)/);
   if (m) {
+    // A trailing date word ("today", "yesterday") belongs to the date range, not the name.
+    const rawName = m[1]!.replace(/\s+(today|yesterday|this week|this month)$/, "").trim();
     // Same name on different teams: report each separately instead of guessing.
-    const matches = snapshot.testers.filter((t) => norm(t.name) === norm(m[1]!));
+    const matches = snapshot.testers.filter((t) => norm(t.name) === norm(rawName));
     if (!matches.length) return null; // unknown name -> let the LLM/command layer handle it
     const scope = mentionedProject ? ` on ${mentionedProject}` : "";
     const leaderOf = (id: number) => snapshot.leaders.find((l) => l.id === id)?.name ?? "Unassigned";

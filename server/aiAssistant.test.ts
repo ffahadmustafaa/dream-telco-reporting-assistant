@@ -127,4 +127,10 @@ describe("same-name testers on different teams", () => {
     expect(answer).toContain("Rimsha (Fahad Mustafa)");
     expect(answer).toContain("Rimsha (Aqsa javed)");
   });
+
+  it("ignores a trailing date word in the name", () => {
+    const answer = answerWorkspaceQuestion("total work by Rimsha today", dupSnapshot());
+    expect(answer).toContain("Fahad Mustafa's team");
+    expect(answer).toContain("Aqsa javed's team");
+  });
 });
