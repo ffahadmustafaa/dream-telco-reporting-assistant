@@ -51,7 +51,7 @@ export function parseProjectName(text: string, projectNames: string[]): string |
 export type AssistantCommand =
   | { type: "log_report"; name: string; quantity: number; project: string; teamLeader: string | null }
   | { type: "add_tester"; name: string; teamLeader: string }
-  | { type: "remove_tester"; name: string }
+  | { type: "remove_tester"; name: string; teamLeader: string | null }
   | { type: "add_team_leader"; name: string }
   | { type: "remove_team_leader"; name: string }
   | { type: "set_target"; name: string; quantity: number }
@@ -72,8 +72,8 @@ export function parseAssistantCommand(text: string, projectNames: string[]): Ass
   m = low.match(/(?:add|create)\s+(?:new\s+)?tester\s+([a-z][a-z ]+?)\s+(?:under|to|in|with)\s+([a-z][a-z ]+)/);
   if (m) return { type: "add_tester", name: title(m[1]!), teamLeader: title(m[2]!) };
 
-  m = low.match(/(?:remove|delete|deactivate)\s+tester\s+([a-z][a-z ]+)/);
-  if (m) return { type: "remove_tester", name: title(m[1]!) };
+  m = low.match(/(?:remove|delete|deactivate)\s+tester\s+([a-z][a-z ]+?)(?:\s+under\s+([a-z][a-z ]+))?\s*$/);
+  if (m) return { type: "remove_tester", name: title(m[1]!.trim()), teamLeader: m[2] ? title(m[2]!.trim()) : null };
 
   m = low.match(/(?:remove|delete|deactivate)\s+team\s*leader\s+([a-z][a-z ]+)/);
   if (m) return { type: "remove_team_leader", name: title(m[1]!) };

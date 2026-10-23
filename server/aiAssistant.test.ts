@@ -36,7 +36,8 @@ describe("parseAssistantCommand", () => {
   });
   it("parses roster commands", () => {
     expect(parseAssistantCommand("Add tester Ali under Ayesha", PROJECTS)).toEqual({ type: "add_tester", name: "Ali", teamLeader: "Ayesha" });
-    expect(parseAssistantCommand("Remove tester Ali", PROJECTS)).toEqual({ type: "remove_tester", name: "Ali" });
+    expect(parseAssistantCommand("Remove tester Ali", PROJECTS)).toEqual({ type: "remove_tester", name: "Ali", teamLeader: null });
+    expect(parseAssistantCommand("Remove tester Rimsha under Fahad Mustafa", PROJECTS)).toEqual({ type: "remove_tester", name: "Rimsha", teamLeader: "Fahad Mustafa" });
     expect(parseAssistantCommand("Add team leader Hamza", PROJECTS)).toEqual({ type: "add_team_leader", name: "Hamza" });
     expect(parseAssistantCommand("Remove team leader Hamza", PROJECTS)).toEqual({ type: "remove_team_leader", name: "Hamza" });
     expect(parseAssistantCommand("Set target 5000 for Bisma", PROJECTS)).toEqual({ type: "set_target", name: "Bisma", quantity: 5000 });

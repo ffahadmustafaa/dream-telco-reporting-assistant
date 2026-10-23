@@ -244,28 +244,32 @@ async function executeAssistantCommand(user: CommandUser, command: AssistantComm
       const leader = findLeader(command.teamLeader);
       if (!leader) return `I couldn't find Team Leader "${command.teamLeader}".`;
       if (user.accountRole === "team_leader" && (!ownLeader || leader.id !== ownLeader.id)) return "You can only add testers to your own team.";
-      const existing = findTesters(command.name)[0];
+      // Same name on another team is a different person — only reactivate within this team.
+      const existing = findTesters(command.name).find(item => item.teamLeaderId === leader.id);
       if (existing) {
-        await updateTester(existing.id, { status: "ACTIVE", teamLeaderId: leader.id });
+        await updateTester(existing.id, { status: "ACTIVE" });
         return `${command.name} is back on the roster under ${leader.name}.`;
       }
-      await insertTester({ name: command.name, teamLeaderId: leader.id });
+      await insertTester({ name: command.name, teamLeaderId: leader.id, status: "ACTIVE" });
       await addAuditLog({ action: "Tester Added", userId: user.id, userCommand: latest, newValue: { name: command.name, teamLeaderId: leader.id } });
       return `Added tester ${command.name} under ${leader.name}.`;
     }
     case "remove_tester": {
       if (user.accountRole === "tester") return "Only Team Leaders and Admins can remove testers.";
-      const matches = findTesters(command.name);
-      if (!matches.length) return `I couldn't find a tester named "${command.name}".`;
-      const lines: string[] = [];
-      for (const item of matches) {
-        if (user.accountRole === "team_leader" && (!ownLeader || item.teamLeaderId !== ownLeader.id)) { lines.push(`${item.name} is not on your team.`); continue; }
-        if (item.status !== "ACTIVE") { lines.push(`${item.name} is already inactive.`); continue; }
-        await updateTester(item.id, { status: "INACTIVE", dateInactive: new Date() });
-        await addAuditLog({ action: "Tester Deactivated", userId: user.id, userCommand: latest, oldValue: item, reason: "AI removal command (history preserved)" });
-        lines.push(`Deactivated ${item.name}. Their past reports are kept.`);
+      let matches = findTesters(command.name);
+      if (user.accountRole === "team_leader" && ownLeader) matches = matches.filter(item => item.teamLeaderId === ownLeader.id);
+      const namedLeader = command.teamLeader ? findLeader(command.teamLeader) : undefined;
+      if (namedLeader) matches = matches.filter(item => item.teamLeaderId === namedLeader.id);
+      if (!matches.length) return `I couldn't find a tester named "${command.name}"${command.teamLeader ? ` under ${command.teamLeader}` : ""}.`;
+      if (matches.length > 1) {
+        const teams = Array.from(new Set(matches.map(item => leaderRows.find(leader => leader.id === item.teamLeaderId)?.name).filter((name): name is string => Boolean(name))));
+        return `There are ${matches.length} testers named "${command.name}"${teams.length ? ` (teams: ${teams.join(", ")})` : ""}. Please say which one, e.g. "remove tester ${command.name} under <team leader>".`;
       }
-      return lines.join(" ");
+      const item = matches[0]!;
+      if (item.status !== "ACTIVE") return `${item.name} is already inactive.`;
+      await updateTester(item.id, { status: "INACTIVE", dateInactive: new Date() });
+      await addAuditLog({ action: "Tester Deactivated", userId: user.id, userCommand: latest, oldValue: item, reason: "AI removal command (history preserved)" });
+      return `Deactivated ${item.name}. Their past reports are kept.`;
     }
     case "add_team_leader": {
       if (!user.isAdmin) return "Only an Admin can add a Team Leader.";
@@ -347,12 +351,34 @@ export const appRouter = router({
           teamLeaderChanged = true;
         }
       }
+      // Validate the roster sync BEFORE writing: renaming onto an existing same-team name is refused
+      // instead of leaving the account renamed and the roster stale.
+      let ownRosterEntry: Awaited<ReturnType<typeof listTesters>>[number] | undefined;
+      let rosterNewName: string | undefined;
+      if (ctx.user.accountRole === "tester" && ctx.user.name) {
+        const targetTeamId = teamLeaderChanged ? (input.teamLeaderId as number) : ctx.user.teamLeaderId;
+        ownRosterEntry = (await listTesters()).find(t => cleanName(t.name) === cleanName(ctx.user.name ?? "") && t.teamLeaderId === ctx.user.teamLeaderId);
+        rosterNewName = input.name.trim();
+        if (ownRosterEntry && cleanName(rosterNewName) !== cleanName(ctx.user.name ?? "")) {
+          const newName = rosterNewName;
+          const collision = (await listTesters()).find(t => t.id !== ownRosterEntry!.id && cleanName(t.name) === cleanName(newName) && t.teamLeaderId === targetTeamId && t.status === "ACTIVE");
+          if (collision) throw new Error(`A tester named "${newName}" already exists on that team`);
+        }
+      }
       await updateUser(ctx.user.id, patch as Parameters<typeof updateUser>[1]);
-      if (teamLeaderChanged && ctx.user.name) {
-        // Move the user's own roster entry to the new team (matched by old team first).
-        const ownEntry = (await listTesters()).find(t => cleanName(t.name) === cleanName(ctx.user.name ?? "") && t.teamLeaderId === ctx.user.teamLeaderId);
-        if (ownEntry) await updateTester(ownEntry.id, { teamLeaderId: input.teamLeaderId as number, status: "ACTIVE" });
-        else await upsertTesterByName(ctx.user.name, input.teamLeaderId as number);
+      // Drop the 60s server user cache: without this, a rename followed quickly by another
+      // profile save would see the stale name and the roster sync below would miss its entry.
+      invalidateUserCache(ctx.user.openId);
+      if (ownRosterEntry) {
+        // Keep the roster entry in sync: rename in place and/or move to the new team.
+        // Matched by old name + old team so a same-named tester on another team is never touched.
+        // Only touch the entry when something actually changed — an unrelated profile save must not reactivate it.
+        const rosterPatch: { teamLeaderId?: number; name?: string; status?: "ACTIVE" } = {};
+        if (teamLeaderChanged) { rosterPatch.teamLeaderId = input.teamLeaderId as number; rosterPatch.status = "ACTIVE"; }
+        if (rosterNewName && cleanName(rosterNewName) !== cleanName(ctx.user.name ?? "")) rosterPatch.name = rosterNewName;
+        if (Object.keys(rosterPatch).length) await updateTester(ownRosterEntry.id, rosterPatch);
+      } else if (teamLeaderChanged && ctx.user.name) {
+        await upsertTesterByName(ctx.user.name, input.teamLeaderId as number);
       }
       await setLocalSession(ctx, { openId: ctx.user.openId, name: input.name.trim() }, true);
       await addAuditLog({ action: input.newPassword ? "Profile & Password Updated" : teamLeaderChanged ? "Profile & Team Leader Updated" : "Profile Updated", userId: ctx.user.id, newValue: { name: input.name.trim(), email, phoneNumber: phone, passwordChanged: Boolean(input.newPassword), teamLeaderId: teamLeaderChanged ? input.teamLeaderId : undefined }, reason: "Password-confirmed self-service update" });
@@ -1317,7 +1343,7 @@ export const appRouter = router({
         if (action.type === "setPayoutRule" && action.project.trim()) { const project = (await listProjects()).find(item => cleanName(item.name) === cleanName(action.project)); const ruleTesters = await listTesters(); const ruleLeader = leaderName ? (await listTeamLeaders()).find(item => cleanName(item.name) === cleanName(leaderName)) : undefined; const nameMatches = action.tester.trim() ? ruleTesters.filter(item => cleanName(item.name) === cleanName(action.tester.trim())) : []; let tester: typeof ruleTesters[number] | undefined; if (nameMatches.length === 1) tester = nameMatches[0]; else if (nameMatches.length > 1 && ruleLeader) tester = nameMatches.find(item => item.teamLeaderId === ruleLeader.id); if (!project) exceptions.push(`Project ${action.project} was not found for payout rule`); else if (nameMatches.length > 1 && !tester) exceptions.push(`Multiple testers named ${action.tester.trim()} — specify the team (e.g. "${action.tester.trim()} under <team leader>"); rule not set.`); else { const existing = (await listPayoutRules()).find(item => item.projectId === project.id && item.testerId === tester?.id && item.status === "ACTIVE"); const payload = { projectId: project.id, testerId: tester?.id, ratePerOtp: action.rate > 0 ? action.rate : undefined, fixedAmount: action.fixed > 0 ? action.fixed : undefined, notes: latest.slice(0, 1000) }; if (existing) await updatePayoutRule(existing.id, payload); else await insertPayoutRule(payload); } }
         if (action.type === "addTester" && name && leaderName) { const leader = await upsertTeamLeader(leaderName); await upsertTesterByName(name, leader.id); }
         if (action.type === "deleteLeader") { const leader = (await listTeamLeaders()).find(item => cleanName(item.name) === cleanName(name)); if (!leader) exceptions.push(`Team Leader ${name} was not found`); else { const activeChildren = (await listTesters()).filter(item => item.teamLeaderId === leader.id && item.status === "ACTIVE"); if (activeChildren.length) exceptions.push(`Cannot remove ${leader.name}: ${activeChildren.length} active tester(s) remain on the team`); else { await updateTeamLeader(leader.id, { status: "INACTIVE" }); await addAuditLog({ action: "Team Leader Deactivated", userId: ctx.user.id, oldValue: leader, userCommand: latest, reason: "AI deletion command (history preserved)" }); } } }
-        if (action.type === "deleteTester") { const matches = (await listTesters()).filter(item => cleanName(item.name) === cleanName(name)); if (!matches.length) exceptions.push(`Tester ${name} was not found`); for (const tester of matches) { await updateTester(tester.id, { status: "INACTIVE", dateInactive: new Date() }); await addAuditLog({ action: "Tester Deactivated", userId: ctx.user.id, oldValue: tester, userCommand: latest, reason: "AI deletion command (history preserved)" }); } }
+        if (action.type === "deleteTester") { const allMatches = (await listTesters()).filter(item => cleanName(item.name) === cleanName(name)); let matches = allMatches; if (leaderName && matches.length > 1) { const leaders = await listTeamLeaders(); const target = leaders.find(item => cleanName(item.name) === cleanName(leaderName)); if (target) matches = matches.filter(item => item.teamLeaderId === target.id); } if (!matches.length) exceptions.push(`Tester ${name} was not found`); else if (matches.length > 1) exceptions.push(`Multiple testers named ${name} — specify the team (e.g. "${name} under <team leader>"); nothing was deactivated.`); else { const tester = matches[0]!; await updateTester(tester.id, { status: "INACTIVE", dateInactive: new Date() }); await addAuditLog({ action: "Tester Deactivated", userId: ctx.user.id, oldValue: tester, userCommand: latest, reason: "AI deletion command (history preserved)" }); } }
       }
       const [freshRoster, freshLeaders, freshProjects, rules] = await Promise.all([listTesters(), listTeamLeaders(), listProjects(), listActivePayoutRules()]);
       const projectByName = new Map(freshProjects.map(project => [cleanName(project.name), project]));
