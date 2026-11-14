@@ -634,7 +634,38 @@ export const appRouter = router({
         assertCanModifyAccount(ctx.user, old);
       }
       await deleteUser(input.userId);
-      await addAuditLog({ action: "User Deleted", userId: ctx.user.id, oldValue: old, reason: "Admin moderation" });
+      // Removing a user from the directory must also remove them from the
+      // roster — otherwise they keep appearing in the Excel report, which is
+      // built from the roster. Mirror the roster page's own delete flows.
+      // Same-name testers on different teams are different people: a tester
+      // is matched by name AND team, so only their own entry is removed.
+      const removedRoster: string[] = [];
+      if (old.accountRole === "tester") {
+        const entry = (await listTesters()).find(t => cleanName(t.name) === cleanName(old.name ?? "") && t.teamLeaderId === old.teamLeaderId);
+        if (entry) {
+          await deletePerformanceByTester(entry.id);
+          await deleteTargetsByTester(entry.id);
+          await deletePayoutsByTester(entry.id);
+          await deleteTester(entry.id);
+          removedRoster.push(`tester ${entry.name} (team ${entry.teamLeaderId})`);
+        }
+      } else if (old.accountRole === "team_leader") {
+        const leader = (await listTeamLeaders()).find(l => cleanName(l.name) === cleanName(old.name ?? ""));
+        if (leader) {
+          const children = (await listTesters()).filter(tester => tester.teamLeaderId === leader.id);
+          for (const child of children) {
+            await deletePerformanceByTester(child.id);
+            await deleteTargetsByTester(child.id);
+            await deletePayoutsByTester(child.id);
+          }
+          await deleteTestersByLeader(leader.id);
+          await deleteTargetsByLeader(leader.id);
+          await deletePayoutsByLeader(leader.id);
+          await deleteTeamLeader(leader.id);
+          removedRoster.push(`team leader ${leader.name} and ${children.length} tester(s)`);
+        }
+      }
+      await addAuditLog({ action: "User Deleted", userId: ctx.user.id, oldValue: old, newValue: removedRoster.length ? { removedRoster } : undefined, reason: "Admin moderation" });
       return { success: true };
     }),
   }),

@@ -25,7 +25,11 @@ export async function compileDailyReport(date = karachiDate(), regionId?: number
     listPerformanceByDate(toDate(date)),
   ]);
   const leaderRows = regionId == null ? allLeaders : allLeaders.filter(l => l.regionId === regionId);
-  const testerRows = regionId == null ? allTesters : allTesters.filter(t => t.regionId === regionId);
+  // Only the active roster belongs in the Excel report. A tester removed from
+  // the User Directory (or deactivated from the roster) must not keep showing
+  // up — with zeroes or with old numbers. A missing status is treated as
+  // active (legacy records predate the status field).
+  const testerRows = (regionId == null ? allTesters : allTesters.filter(t => t.regionId === regionId)).filter(t => t.status !== "INACTIVE");
   const leaderIds = new Set(leaderRows.map(l => l.id));
   const testerIds = new Set(testerRows.map(t => t.id));
   const projectsById = new Map(projectRows.map(project => [project.id, project.name]));
@@ -50,7 +54,7 @@ export async function compileDailyReport(date = karachiDate(), regionId?: number
   const rows: ReportRow[] = Array.from(totals.entries()).map(([key, values]) => { const [leader, tester] = key.split("||"); return { leader: leader ?? "Unassigned", tester: tester ?? "Unknown", values: Object.fromEntries(projectRows.map(project => [project.name, values.get(project.name) ?? 0])), total: projectRows.reduce((sum, project) => sum + (values.get(project.name) ?? 0), 0) }; });
   const workbook = buildReportWorkbook(date, projectRows.map(project => project.name), rows);
   const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
-  const summary = `Date: ${date}\nTeam Leaders: ${leaderRows.length}\nRoster Testers (including inactive): ${testerRows.length}\nTester rows: ${rows.length}\nGrand Total OTP: ${grandTotal}`;
+  const summary = `Date: ${date}\nTeam Leaders: ${leaderRows.length}\nActive roster testers: ${testerRows.length}\nTester rows: ${rows.length}\nGrand Total OTP: ${grandTotal}`;
   return { date, projects: projectRows.map(project => project.name), rows, workbook, summary, grandTotal };
 }
 
