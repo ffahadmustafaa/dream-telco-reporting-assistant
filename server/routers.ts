@@ -412,8 +412,12 @@ export const appRouter = router({
     })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const email = input.email.trim().toLowerCase(); const phoneNumber = input.phoneNumber.trim();
-      if (await getUserByEmail(email)) throw new Error("That email is already registered");
-      if (await getUserByPhone(phoneNumber)) throw new Error("That phone number is already registered");
+      const existingByEmail = await getUserByEmail(email);
+      // A finished, verified account keeps the "already registered" guard.
+      // A half-finished signup is handled below, after validation.
+      if (existingByEmail && (existingByEmail.accountStatus !== "pending" || existingByEmail.isVerified)) throw new Error("That email is already registered");
+      const existingByPhone = await getUserByPhone(phoneNumber);
+      if (existingByPhone && (!existingByEmail || existingByPhone.id !== existingByEmail.id)) throw new Error("That phone number is already registered");
       // Invite code assigns the region. Existing Central A members keep working without one.
       const region = await getRegionByInviteCode(input.inviteCode);
       if (!region) throw new Error("Invalid invite code. Ask your region manager for the correct code.");
@@ -451,6 +455,15 @@ export const appRouter = router({
       } else if (input.role === "team_leader") {
         // Team-leader registrations are linked to the invite-code region on approval.
       }
+      // A half-finished signup (account created, email never verified) is
+      // resumable: re-submitting the form refreshes the details and returns
+      // to the code screen instead of dead-ending on "already registered"
+      // with no way back to verification.
+      if (existingByEmail) {
+        await updateUser(existingByEmail.id, { name: input.name.trim(), phoneNumber, passwordHash: hashPassword(input.password), accountRole: input.role, teamLeaderId: teamLeaderId ?? null, regionId });
+        invalidateUserCache(existingByEmail.openId);
+        return { userId: existingByEmail.id, email, phoneNumber, sandboxMode: true, resumed: true };
+      }
       // Bootstrap: the owner email only gets super_admin if no super_admin exists yet.
       // This closes the hardcoded-email privilege path once the owner account is created.
       const existingSupers = (await listUsers()).filter(u => u.accountRole === "super_admin");
@@ -466,17 +479,24 @@ export const appRouter = router({
       // 15-minute resend cooldown: a fresh code can only be requested 15 minutes after the last one.
       const latest = (await listAuthChallenges())
         .filter(c => c.userId === input.userId && c.isCompleted === 0)
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+        .sort((a, b) => new Date(b.expiresAt).getTime() - new Date(a.expiresAt).getTime())[0];
       if (latest) {
-        const elapsedMs = Date.now() - new Date(latest.createdAt).getTime();
+        // createdAt was not stamped on older challenges — derive the send time
+        // from expiresAt (codes live 10 minutes).
+        const sentAt = latest.createdAt ? new Date(latest.createdAt).getTime() : new Date(latest.expiresAt).getTime() - 10 * 60 * 1000;
+        const elapsedMs = Date.now() - sentAt;
         const cooldownMs = 15 * 60 * 1000;
         if (elapsedMs < cooldownMs) {
-          const waitMin = Math.ceil((cooldownMs - elapsedMs) / 60000);
-          throw new Error(`A code was already sent. Please wait ${waitMin} minute${waitMin === 1 ? "" : "s"} before requesting a new one.`);
+          const waitSec = Math.ceil((cooldownMs - elapsedMs) / 1000);
+          // Don't dead-end: the earlier code is still valid, so return success
+          // and let the caller show the code screen with the resend countdown
+          // instead of an error with nowhere to enter the code.
+          const waitMin = Math.ceil(waitSec / 60);
+          return { expiresInMinutes: 10, resendAfterSeconds: waitSec, alreadySent: true, message: `A code was already sent to your Gmail and is still valid. Check your inbox (and spam) — or wait ${waitMin} minute${waitMin === 1 ? "" : "s"} for a new one.` };
         }
       }
       const emailOtp = String(Math.floor(100000 + Math.random() * 900000));
-      await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp: "", expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0 });
+      await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp: "", expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0, createdAt: new Date() });
       await sendRegistrationOtpEmail(user.email, emailOtp);
       return { expiresInMinutes: 10, resendAfterSeconds: 15 * 60, message: "Verification code sent to your Gmail." };
     }),

@@ -133,7 +133,7 @@ function RegisterPage() {
   const resendWaitSec = Math.max(0, Math.ceil((resendAt - now) / 1000));
   const resendLabel = resendWaitSec > 0 ? `Resend code in ${Math.floor(resendWaitSec / 60)}:${String(resendWaitSec % 60).padStart(2, "0")}` : "Resend code";
   const update = (key: keyof typeof form, value: string) => setForm(current => ({ ...current, [key]: value }));
-  const requestOtp = trpc.auth.requestRegistrationOtp.useMutation({ onSuccess: result => { setResendAt(Date.now() + (result.resendAfterSeconds ?? 900) * 1000); setStep("verification"); toast.success("Verification code sent to your Gmail."); }, onError: error => toast.error(error.message) });
+  const requestOtp = trpc.auth.requestRegistrationOtp.useMutation({ onSuccess: result => { setResendAt(Date.now() + (result.resendAfterSeconds ?? 900) * 1000); setStep("verification"); toast.success(result.alreadySent ? (result.message ?? "A code was already sent — check your Gmail.") : "Verification code sent to your Gmail."); }, onError: error => toast.error(error.message) });
   const register = trpc.auth.register.useMutation({ onSuccess: result => { setRegistration({ userId: result.userId }); requestOtp.mutate({ userId: result.userId }); }, onError: error => toast.error(error.message) });
   const verify = trpc.auth.verifyRegistrationOtp.useMutation({ onSuccess: result => { toast.success("Registration complete — welcome to Dream Telco"); window.location.href = result.redirect; }, onError: error => toast.error(error.message) });
   const submitDetails = (event: React.FormEvent) => {
