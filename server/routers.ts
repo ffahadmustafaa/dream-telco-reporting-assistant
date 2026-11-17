@@ -496,8 +496,16 @@ export const appRouter = router({
         }
       }
       const emailOtp = String(Math.floor(100000 + Math.random() * 900000));
-      await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp: "", expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0, createdAt: new Date() });
-      await sendRegistrationOtpEmail(user.email, emailOtp);
+      const challengeId = await insertAuthChallenge({ userId: user.id, emailOtp, phoneOtp: "", expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0, createdAt: new Date() });
+      try {
+        await sendRegistrationOtpEmail(user.email, emailOtp);
+      } catch {
+        // The code was never delivered — void it so the next request starts
+        // fresh instead of hitting the resend cooldown for a code that does
+        // not exist, and show a plain message instead of the raw mail error.
+        await updateAuthChallenge(challengeId, { isCompleted: 1 });
+        throw new Error("We couldn't send the verification code right now. Please try again in a few minutes — and tell your team leader if it keeps happening.");
+      }
       return { expiresInMinutes: 10, resendAfterSeconds: 15 * 60, message: "Verification code sent to your Gmail." };
     }),
     verifyRegistrationOtp: publicProcedure.input(z.object({ userId: z.number(), emailOtp: z.string().length(6), remember: z.boolean().optional().default(false) })).mutation(async ({ ctx, input }) => {
@@ -545,7 +553,11 @@ export const appRouter = router({
       if (!user) throw new Error("Account doesn't exist");
       const resetCode = String(Math.floor(100000 + Math.random() * 900000));
       await insertOtpVerification({ identifier: `pwdreset:${user.id}`, otpCode: resetCode, expiresAt: new Date(Date.now() + 15 * 60 * 1000), isUsed: 0 });
-      await sendRegistrationOtpEmail(email, resetCode);
+      try {
+        await sendRegistrationOtpEmail(email, resetCode);
+      } catch {
+        throw new Error("We couldn't send the reset code right now. Please try again in a few minutes.");
+      }
       await addAuditLog({ action: "Password Reset Requested", userId: user.id, reason: "Forgot-password flow" });
       return { accepted: true };
     }),

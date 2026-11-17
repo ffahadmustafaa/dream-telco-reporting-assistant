@@ -3,17 +3,19 @@
  * shares production Firestore — test data only, cleaned up at the end).
  *
  * 1. Register a fresh test user -> pending account created.
- * 2. Request OTP -> fresh code sent, challenge now stamps createdAt.
+ * 2. Request OTP -> send fails (SMTP broken) -> friendly error, and the
+ *    undelivered challenge is voided (completed) with createdAt stamped.
+ * 2b. Simulate a delivered code (insert an uncompleted challenge), then
+ *    request OTP -> alreadySent:true, no new send attempted.
  * 3. Register again with the same email -> must RESUME (same userId,
  *    resumed:true) instead of "That email is already registered".
- * 4. Request OTP again -> alreadySent:true (cooldown, no new email).
- * 5. Register with an ACTIVE user's email -> still "already registered".
+ * 4. Register with an ACTIVE user's email -> still "already registered".
  *
  * Usage (dev server up on :3000):
  *   ./node_modules/.bin/tsx scripts/verify-signup-resume.ts
  */
 import "dotenv/config";
-import { deleteUser, getUserByEmail, listAuthChallenges, listUsers, updateAuthChallenge } from "../server/db";
+import { deleteUser, getUserByEmail, insertAuthChallenge, listAuthChallenges, listUsers, updateAuthChallenge } from "../server/db";
 
 const BASE = "http://localhost:3000/api/trpc";
 
@@ -39,19 +41,23 @@ async function main() {
   console.log(`step 1: registered pending userId=${userId}`);
 
   try {
-    // 2. Request OTP. In this sandbox Gmail closes the SMTP connection, and
-    // in production the stored app password is rejected (535) — either way
-    // the send can fail, but the challenge row must still be created with
-    // createdAt stamped (the cooldown fix depends on it).
+    // 2. Request OTP — send fails (SMTP broken) -> friendly error, challenge voided.
     const otp1 = await trpc("auth.requestRegistrationOtp", { userId });
-    if (otp1.ok) {
-      console.log(`step 2: requestOtp ok, alreadySent=${otp1.body.result.data.json.alreadySent ?? false}`);
-    } else {
-      console.log(`step 2: requestOtp send failed (expected here — SMTP broken): ${JSON.stringify(otp1.body?.error?.json?.message ?? otp1.body)}`);
-    }
-    const challenge = (await listAuthChallenges()).find(c => c.userId === userId && c.isCompleted === 0);
-    console.log(`step 2: challenge exists with createdAt stamped: ${Boolean(challenge?.createdAt)} (want true)`);
-    if (!challenge?.createdAt) throw new Error("FAIL: challenge has no createdAt");
+    if (otp1.ok) throw new Error("step 2: expected the send to fail in this environment");
+    const msg = JSON.stringify(otp1.body?.error?.json?.message ?? otp1.body);
+    console.log(`step 2: requestOtp failed with friendly message: ${msg.includes("couldn't send") && !msg.includes("535")} (want true)`);
+    if (!msg.includes("couldn't send") || msg.includes("535")) throw new Error(`FAIL: raw mail error shown: ${msg}`);
+    const challenges = (await listAuthChallenges()).filter(c => c.userId === userId);
+    const latest = challenges.sort((a, b) => new Date(b.expiresAt).getTime() - new Date(a.expiresAt).getTime())[0];
+    console.log(`step 2: challenge createdAt stamped: ${Boolean(latest?.createdAt)} (want true), voided after failed send: ${latest?.isCompleted === 1} (want true)`);
+    if (!latest?.createdAt || latest.isCompleted !== 1) throw new Error("FAIL: challenge not stamped/voided");
+
+    // 2b. Simulate a delivered code, then request OTP -> alreadySent.
+    await insertAuthChallenge({ userId, emailOtp: "123456", phoneOtp: "", expiresAt: new Date(Date.now() + 10 * 60 * 1000), isCompleted: 0, createdAt: new Date() });
+    const otp2 = await trpc("auth.requestRegistrationOtp", { userId });
+    if (!otp2.ok) throw new Error(`step 2b requestOtp failed: ${JSON.stringify(otp2.body)}`);
+    console.log(`step 2b: second requestOtp alreadySent=${otp2.body.result.data.json.alreadySent} (want true)`);
+    if (otp2.body.result.data.json.alreadySent !== true) throw new Error("FAIL: alreadySent not returned");
 
     // 3. Register again, same email (new name spelling) -> resume.
     const second = await trpc("auth.register", { name: "ZZ Resume Test 2", email, phoneNumber: phone, password: "ResumePass123", role: "tester", teamLeaderId: 8, inviteCode });
@@ -62,17 +68,12 @@ async function main() {
     const updated = await getUserByEmail(email);
     console.log(`step 3: name after resume: ${updated?.name} (want "ZZ Resume Test 2")`);
 
-    // 4. Request OTP again within cooldown -> alreadySent, no new email.
-    const otp2 = await trpc("auth.requestRegistrationOtp", { userId });
-    if (!otp2.ok) throw new Error(`step 4 second requestOtp failed: ${JSON.stringify(otp2.body)}`);
-    console.log(`step 4: second requestOtp alreadySent=${otp2.body.result.data.json.alreadySent} (want true)`);
-
-    // 5. Active user's email still blocked.
+    // 4. Active user's email still blocked.
     const active = (await listUsers()).find(u => u.accountStatus === "active" && u.email && u.email !== email);
     const blocked = await trpc("auth.register", { name: "ZZ Blocked", email: active!.email!, phoneNumber: "+923009992222", password: "ResumePass123", role: "tester", teamLeaderId: 8, inviteCode });
-    const msg = JSON.stringify(blocked.body);
-    console.log(`step 5: active-email register rejected: ${!blocked.ok && msg.includes("already registered")} (want true)`);
-    if (blocked.ok || !msg.includes("already registered")) throw new Error("FAIL: active email was not blocked");
+    const blockedMsg = JSON.stringify(blocked.body);
+    console.log(`step 4: active-email register rejected: ${!blocked.ok && blockedMsg.includes("already registered")} (want true)`);
+    if (blocked.ok || !blockedMsg.includes("already registered")) throw new Error("FAIL: active email was not blocked");
 
     console.log("PASS: signup resume works end to end");
   } finally {
