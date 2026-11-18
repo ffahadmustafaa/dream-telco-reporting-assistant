@@ -106,6 +106,21 @@ const textFromLLM = (value: string | Array<{ type: string; text?: string }>) => 
 const hashPassword = (password: string) => { const salt = randomBytes(16).toString("hex"); return `${salt}:${scryptSync(password, salt, 64).toString("hex")}`; };
 const verifyPassword = (password: string, stored: string) => { const [salt, hash] = stored.split(":"); if (!salt || !hash) return false; const derived = scryptSync(password, salt, 64); const expected = Buffer.from(hash, "hex"); return expected.length === derived.length && timingSafeEqual(expected, derived); };
 const setLocalSession = async (ctx: { req: any; res: any }, user: { openId: string; name: string | null }, remember = false) => { const token = await createSessionToken(user.openId, { name: user.name ?? "Workspace user" }); ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), ...(remember ? { maxAge: 365 * 24 * 60 * 60 * 1000 } : {}) }); };
+
+/**
+ * Roster linking that verifyRegistrationOtp performs on activation, reused
+ * when email verification is off so a directly-activated account lands on
+ * the roster exactly as a verified one would.
+ */
+async function linkRegistrationToRoster(accountRole: string, name: string, teamLeaderId: number | null) {
+  if (accountRole === "team_leader") {
+    const existingLeader = (await listTeamLeaders()).find(leader => cleanName(leader.name) === cleanName(name));
+    if (!existingLeader) await insertTeamLeader({ name, status: "ACTIVE" });
+  }
+  if (accountRole === "tester" && teamLeaderId) {
+    await upsertTesterByName(name, teamLeaderId);
+  }
+}
 const stripSecrets = (user: any) => { if (!user) return null; const { passwordHash: _passwordHash, ...safeUser } = user; return safeUser; };
 
 /**
@@ -411,6 +426,9 @@ export const appRouter = router({
       inviteCode: z.string().min(4).max(32),
     })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
+      // While email verification is off (SMTP broken), new accounts are
+      // created active and verified — no OTP email is sent or required.
+      const emailVerificationEnabled = (await getAppSettings()).emailVerificationEnabled === 1;
       const email = input.email.trim().toLowerCase(); const phoneNumber = input.phoneNumber.trim();
       const existingByEmail = await getUserByEmail(email);
       // A finished, verified account keeps the "already registered" guard.
@@ -458,24 +476,36 @@ export const appRouter = router({
       // A half-finished signup (account created, email never verified) is
       // resumable: re-submitting the form refreshes the details and returns
       // to the code screen instead of dead-ending on "already registered"
-      // with no way back to verification.
+      // with no way back to verification. While verification is off, the
+      // resumed account is activated directly instead.
       if (existingByEmail) {
+        if (!emailVerificationEnabled) {
+          await updateUser(existingByEmail.id, { name: input.name.trim(), phoneNumber, passwordHash: hashPassword(input.password), accountRole: input.role, teamLeaderId: teamLeaderId ?? null, regionId, accountStatus: "active", isVerified: 1, emailVerified: 1, phoneVerified: 1 });
+          invalidateUserCache(existingByEmail.openId);
+          await linkRegistrationToRoster(input.role, input.name.trim(), teamLeaderId ?? null);
+          return { userId: existingByEmail.id, email, phoneNumber, sandboxMode: true, resumed: true, verificationSkipped: true };
+        }
         await updateUser(existingByEmail.id, { name: input.name.trim(), phoneNumber, passwordHash: hashPassword(input.password), accountRole: input.role, teamLeaderId: teamLeaderId ?? null, regionId });
         invalidateUserCache(existingByEmail.openId);
-        return { userId: existingByEmail.id, email, phoneNumber, sandboxMode: true, resumed: true };
+        return { userId: existingByEmail.id, email, phoneNumber, sandboxMode: true, resumed: true, verificationSkipped: false };
       }
       // Bootstrap: the owner email only gets super_admin if no super_admin exists yet.
       // This closes the hardcoded-email privilege path once the owner account is created.
       const existingSupers = (await listUsers()).filter(u => u.accountRole === "super_admin");
       const isBootstrapSuper = email === "ffahadmustafaa@gmail.com" && existingSupers.length === 0;
-      const userId = await insertUser({ openId: `local_${randomBytes(16).toString("hex")}`, name: input.name.trim(), email, phoneNumber, passwordHash: hashPassword(input.password), loginMethod: "local", role: "user", accountRole: isBootstrapSuper ? "super_admin" : input.role, teamLeaderId: teamLeaderId ?? null, regionId, accountStatus: "pending", isVerified: 0, emailVerified: 0, phoneVerified: 0 });
-      return { userId, email, phoneNumber, sandboxMode: true };
+      const userId = await insertUser({ openId: `local_${randomBytes(16).toString("hex")}`, name: input.name.trim(), email, phoneNumber, passwordHash: hashPassword(input.password), loginMethod: "local", role: "user", accountRole: isBootstrapSuper ? "super_admin" : input.role, teamLeaderId: teamLeaderId ?? null, regionId, accountStatus: emailVerificationEnabled ? "pending" : "active", isVerified: emailVerificationEnabled ? 0 : 1, emailVerified: emailVerificationEnabled ? 0 : 1, phoneVerified: emailVerificationEnabled ? 0 : 1 });
+      if (!emailVerificationEnabled) {
+        await linkRegistrationToRoster(input.role, input.name.trim(), teamLeaderId ?? null);
+        return { userId, email, phoneNumber, sandboxMode: true, verificationSkipped: true };
+      }
+      return { userId, email, phoneNumber, sandboxMode: true, verificationSkipped: false };
     }),
     requestRegistrationOtp: publicProcedure.input(z.object({ userId: z.number() })).mutation(async ({ input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const user = await getUser(input.userId);
       if (!user) throw new Error("Registration account not found");
       if (!user.email) throw new Error("No email address on this account");
+      if ((await getAppSettings()).emailVerificationEnabled !== 1) throw new Error("Email verification is currently turned off — please sign in, or submit the registration form again to activate your account.");
       // 15-minute resend cooldown: a fresh code can only be requested 15 minutes after the last one.
       const latest = (await listAuthChallenges())
         .filter(c => c.userId === input.userId && c.isCompleted === 0)
@@ -512,6 +542,7 @@ export const appRouter = router({
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const user = await getUser(input.userId);
       if (!user) throw new Error("Registration account not found");
+      if ((await getAppSettings()).emailVerificationEnabled !== 1) throw new Error("Email verification is currently turned off — please sign in, or submit the registration form again to activate your account.");
       const match = (await listAuthChallenges()).find(item => item.userId === input.userId && item.emailOtp === input.emailOtp && item.isCompleted === 0 && item.expiresAt > new Date());
       if (!match) throw new Error("The verification code is incorrect or expired.");
       const existingSupers2 = (await listUsers()).filter(u => u.accountRole === "super_admin");
@@ -551,6 +582,7 @@ export const appRouter = router({
       const email = input.email.trim().toLowerCase();
       const user = await getUserByEmail(email);
       if (!user) throw new Error("Account doesn't exist");
+      if ((await getAppSettings()).emailVerificationEnabled !== 1) throw new Error("Password reset by email is currently turned off. Ask your team leader or an admin for help.");
       const resetCode = String(Math.floor(100000 + Math.random() * 900000));
       await insertOtpVerification({ identifier: `pwdreset:${user.id}`, otpCode: resetCode, expiresAt: new Date(Date.now() + 15 * 60 * 1000), isUsed: 0 });
       try {
@@ -1312,10 +1344,12 @@ export const appRouter = router({
       smtpPass: z.string().max(500).optional(),
       smtpFrom: z.string().max(320).nullable().optional(),
       autoReportEnabled: z.boolean().optional(),
+      emailVerificationEnabled: z.boolean().optional(),
     })).mutation(async ({ ctx, input }) => {
       if (!isDbConfigured()) throw new Error("Database is unavailable");
       const patch: Record<string, unknown> = {};
       if (input.autoReportEnabled !== undefined) patch.autoReportEnabled = input.autoReportEnabled ? 1 : 0;
+      if (input.emailVerificationEnabled !== undefined) patch.emailVerificationEnabled = input.emailVerificationEnabled ? 1 : 0;
       if (input.reportTime !== undefined) patch.reportTime = input.reportTime;
       if (input.timezone !== undefined) patch.timezone = input.timezone;
       if (input.adminEmail !== undefined) patch.adminEmail = input.adminEmail;

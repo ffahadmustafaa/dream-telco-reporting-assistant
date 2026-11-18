@@ -983,6 +983,10 @@ export interface AppSettings {
   lastAutoReport: string | null;
   /** 1 = the 10:30 PM auto-report cron sends emails; 0 = paused. */
   autoReportEnabled: number;
+  /** 1 = new registrations need an email OTP code; 0 = accounts are created
+   * active without verification, and forgot-password email is paused too.
+   * Turned off while SMTP is broken so members can still sign up. */
+  emailVerificationEnabled: number;
   updatedAt: Date;
 }
 
@@ -998,6 +1002,7 @@ const DEFAULT_APP_SETTINGS = {
   smtpFrom: null as string | null,
   lastAutoReport: null as string | null,
   autoReportEnabled: 1,
+  emailVerificationEnabled: 0,
 };
 
 /** Singleton settings document (id "1"), created lazily with defaults. */
