@@ -389,13 +389,22 @@ export async function getUserByPhone(phoneNumber: string): Promise<User | undefi
   return fromDoc<User>(snap.docs[0] as never);
 }
 
+/** Accept the phone formats people actually type: +923…, 923… or 03….
+ * Stored numbers are always +923…, so an unprefixed login never matched. */
+function normalizePhoneIdentifier(value: string): string {
+  const digits = value.replace(/[\s-]/g, "");
+  if (/^923\d{9}$/.test(digits)) return `+${digits}`;
+  if (/^03\d{9}$/.test(digits)) return `+92${digits.slice(1)}`;
+  return value.trim();
+}
+
 /** Find a user by email or phone identifier with targeted queries (2 reads max). */
 export async function getUserByIdentifier(identifier: string): Promise<User | undefined> {
   const id = identifier.trim().toLowerCase();
   // Try email first (most common), then phone
   const byEmail = await getUserByEmail(id);
   if (byEmail) return byEmail;
-  return getUserByPhone(identifier.trim());
+  return getUserByPhone(normalizePhoneIdentifier(identifier.trim()));
 }
 
 export async function insertUser(values: InsertUser): Promise<number> {
